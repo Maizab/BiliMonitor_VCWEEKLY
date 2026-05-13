@@ -1,0 +1,4 @@
+*.db
+.claude
+*.xlsx
+__pycache__
