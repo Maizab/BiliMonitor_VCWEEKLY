@@ -19,6 +19,7 @@ const selectedId = ref(null)
 const showSettings = ref(false)
 const showLog = ref(false)
 const latestSnapshot = ref(null)
+const dataLoading = ref(false)
 const currentHours = ref(24)
 const confirmRef = ref(null)
 const toastRef = ref(null)
@@ -44,7 +45,9 @@ watch(snapshot, s => {
 
 watch(selectedId, async (id) => {
   if (!id) { latestSnapshot.value = null; return }
+  dataLoading.value = true
   try { latestSnapshot.value = await api.getLatest(id) } catch (e) {}
+  dataLoading.value = false
 }, { immediate: false })
 
 async function fetchInitial() {
@@ -102,7 +105,7 @@ onUnmounted(() => disconnect())
           @select="onSelectVideo"
           @change="loadVideos"
         />
-        <DataCards :snapshot="latestSnapshot" />
+        <DataCards :snapshot="latestSnapshot" :loading="dataLoading" />
       </aside>
       <section class="content">
         <ChartPanel
@@ -118,6 +121,7 @@ onUnmounted(() => disconnect())
 </template>
 
 <style>
+*, *::before, *::after { -webkit-tap-highlight-color: transparent; }
 .page-loading {
   display: flex; align-items: center; justify-content: center; height: 100vh;
 }

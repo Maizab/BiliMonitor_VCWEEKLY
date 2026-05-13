@@ -1,7 +1,10 @@
 <script setup>
 import { computed } from 'vue'
 
-const props = defineProps({ snapshot: Object })
+const props = defineProps({
+  snapshot: Object,
+  loading: { type: Boolean, default: false },
+})
 
 const fmt = n => n != null ? Number(n).toLocaleString() : '-'
 
@@ -23,11 +26,20 @@ const cards = computed(() => {
 
 <template>
   <div class="cards">
-    <div v-for="c in cards" :key="c.label" :class="['card', { total: c.total }]">
-      <div class="label">{{ c.label }}</div>
-      <div class="value">{{ c.value }}</div>
-      <div v-if="c.score" class="score">{{ c.score }}</div>
-    </div>
+    <template v-if="loading">
+      <div v-for="i in 9" :key="'sk'+i" class="card skeleton">
+        <div class="sk-line w30"></div>
+        <div class="sk-line w80"></div>
+        <div class="sk-line w40"></div>
+      </div>
+    </template>
+    <template v-else>
+      <div v-for="c in cards" :key="c.label" :class="['card', { total: c.total }]">
+        <div class="label">{{ c.label }}</div>
+        <div class="value">{{ c.value }}</div>
+        <div v-if="c.score" class="score">{{ c.score }}</div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -41,6 +53,13 @@ const cards = computed(() => {
 .card.total { background: linear-gradient(135deg, #4f8ef7, #6c5ce7); border: none; }
 .card.total .label { color: #ffffffaa; }
 .card.total .value { color: #fff; font-size: 22px; }
+.card.skeleton { min-height: 72px; display: flex; flex-direction: column; gap: 6px; }
+.sk-line { height: 12px; border-radius: 4px; background: #e8e8e8; animation: sk-pulse 1.5s ease-in-out infinite; }
+.sk-line.w30 { width: 30%; }
+.sk-line.w40 { width: 40%; }
+.sk-line.w80 { width: 80%; }
+@keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
 @media (max-width: 640px) {
   .cards { grid-template-columns: repeat(3, 1fr); }
 }
