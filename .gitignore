@@ -2,3 +2,5 @@
 .claude
 *.xlsx
 __pycache__
+logs
+*.toml

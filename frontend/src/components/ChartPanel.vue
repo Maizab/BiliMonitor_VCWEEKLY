@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, onUnmounted, inject, nextTick, reactive } from 'vue'
+import { ref, watch, onMounted, onUnmounted, inject, nextTick, reactive, computed } from 'vue'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 
@@ -7,6 +7,8 @@ const props = defineProps({
   selectedId: Number,
   snapshot: Object,
   currentHours: { type: Number, default: 24 },
+  scoreEnabled: { type: Boolean, default: true },
+  refreshKey: { type: Number, default: 0 },
 })
 const emit = defineEmits(['update:hours'])
 
@@ -22,6 +24,13 @@ const METRICS = {
   online_total: { label: '正在观看', color: '#52c41a' },
   score_total:  { label: '得点', color: '#4f8ef7' },
 }
+
+// Filtered entries for template v-for (excludes score_total when disabled)
+const visibleMetrics = computed(() => {
+  const entries = Object.entries(METRICS)
+  if (props.scoreEnabled) return entries
+  return entries.filter(([k]) => k !== 'score_total')
+})
 
 const DEFAULTS = {
   view_count: true, danmaku: false, reply: false, favorite: false,
@@ -153,8 +162,9 @@ function updateTooltip(u) {
   if (!closest || minDiff > 120000) { ttVisible.value = false; return }
 
   ttTime.value = formatTs(closest.timestamp)
+  const se = props.scoreEnabled
   ttItems.value = Object.entries(METRICS)
-    .filter(([k]) => toggles[k])
+    .filter(([k]) => toggles[k] && (k !== 'score_total' || se))
     .map(([k, m]) => ({
       color: m.color,
       label: m.label,
@@ -268,7 +278,8 @@ function destroyAll() {
 function renderAll() {
   nextTick(() => {
     requestAnimationFrame(() => {
-      const visibleKeys = Object.keys(METRICS).filter(k => toggles[k])
+      const se = props.scoreEnabled
+      const visibleKeys = Object.keys(METRICS).filter(k => toggles[k] && (k !== 'score_total' || se))
       visibleKeys.forEach((k, idx) => {
         const el = containerRef.value?.querySelector(`[data-chart="${k}"]`)
         if (!el) return
@@ -295,8 +306,10 @@ watch(() => props.snapshot, s => {
     score_coin: s.score_coin, score_like: s.score_like, score_total: s.score_total,
   })
   if (historyData.length > 2000) historyData = historyData.slice(-2000)
+  const se = props.scoreEnabled
   Object.entries(METRICS).forEach(([k]) => {
     if (!toggles[k] || !charts[k]) return
+    if (k === 'score_total' && !se) return
     charts[k].setData(buildData(historyData, k))
   })
 })
@@ -306,29 +319,16 @@ watch(() => props.selectedId, () => {
   loadHistory()
 })
 
-watch(toggles, (newVal, oldVal) => {
-  const changed = Object.keys(METRICS).find(k => newVal[k] !== oldVal?.[k])
-  if (!changed) return
-  if (newVal[changed]) {
-    nextTick(() => {
-      requestAnimationFrame(() => {
-        if (historyData.length) {
-          const el = containerRef.value?.querySelector(`[data-chart="${changed}"]`)
-          if (el) {
-            const data = buildData(historyData, changed)
-            const opts = makeOpts(METRICS[changed])
-            charts[changed] = new uPlot(opts, data, el)
-            try { charts[changed].setSize({ width: el.clientWidth || 400, height: 100 }) } catch (e) { /* ignore */ }
-          }
-        }
-      })
-    })
-  } else {
-    if (charts[changed]) {
-      try { charts[changed].destroy() } catch (e) { /* ignore */ }
-      delete charts[changed]
-    }
-  }
+watch(toggles, () => {
+  if (historyData.length) renderAll()
+})
+
+watch(() => props.scoreEnabled, () => {
+  if (historyData.length) renderAll()
+})
+
+watch(() => props.refreshKey, () => {
+  if (props.selectedId) loadHistory()
 })
 
 function onResize() {
@@ -377,7 +377,7 @@ onUnmounted(() => {
       <span class="sep"></span>
       <span class="tool-group">
         <span class="tool-label">显示</span>
-        <label v-for="(m, k) in METRICS" :key="k" class="metric-toggle">
+        <label v-for="[k, m] in visibleMetrics" :key="k" class="metric-toggle">
           <input type="checkbox" v-model="toggles[k]" />
           <span class="check-box"></span>
           <span class="dot" :style="{ background: m.color }"></span>
@@ -387,7 +387,7 @@ onUnmounted(() => {
     </div>
     <div class="charts-scroll" ref="containerRef">
       <div v-if="loading" class="overlay-spinner"><span class="spinner"></span></div>
-      <template v-for="(m, k) in METRICS" :key="k">
+      <template v-for="[k, m] in visibleMetrics" :key="k">
         <div v-show="toggles[k]" class="chart-row">
           <div class="row-label">
             <span class="row-dot" :style="{ background: m.color }"></span>
@@ -448,7 +448,7 @@ onUnmounted(() => {
   border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-left: 2px; }
-.charts-scroll { flex: 1; overflow-y: auto; min-height: 0; position: relative; -webkit-tap-highlight-color: transparent; }
+.charts-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; position: relative; -webkit-tap-highlight-color: transparent; }
 .chart-row { display: flex; align-items: stretch; margin-bottom: 2px; -webkit-tap-highlight-color: transparent; }
 .row-label {
   width: 64px; flex-shrink: 0; display: flex; align-items: center; gap: 4px;

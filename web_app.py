@@ -1,21 +1,95 @@
+import hashlib
 import json
 import logging
 import queue
 import requests
+import secrets
 import sqlite3
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 from flask import Flask, Response, request, jsonify
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
 # ============ 配置 ============
 DB_PATH = "monitor.db"
 DEFAULT_INTERVAL = 30
-DEFAULT_COOKIE = ""
 
+# 从 config.toml 读取认证配置
+def _load_auth_config():
+    try:
+        with open("config.toml", "rb") as f:
+            cfg = tomllib.load(f)
+        return cfg.get("auth", {}).get("password", "")
+    except (FileNotFoundError, KeyError):
+        return ""
+
+AUTH_PASSWORD = _load_auth_config()
+_used_nonces: set[str] = set()
+
+# --- 限流 / IP 封禁 ---
+_challenge_window: dict[str, list[float]] = defaultdict(list)
+_verify_failures: dict[str, list[float]] = defaultdict(list)
+_banned_ips: dict[str, float] = {}
+
+CHALLENGE_RATE = 10
+CHALLENGE_WINDOW = 60
+VERIFY_MAX_FAILURES = 5
+VERIFY_FAILURE_WINDOW = 300
+BAN_DURATION = 300
+
+
+def _get_client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return forwarded.split(",")[0].strip() if forwarded else (request.remote_addr or "unknown")
+
+
+def _check_ban(ip: str):
+    now = time.time()
+    if ip in _banned_ips:
+        if now < _banned_ips[ip]:
+            remaining = int(_banned_ips[ip] - now)
+            return jsonify({"error": f"请求过于频繁，请 {remaining} 秒后再试"}), 429
+        del _banned_ips[ip]
+    return None
+
+
+def check_challenge_rate():
+    ip = _get_client_ip()
+    ban = _check_ban(ip)
+    if ban:
+        return ban
+    now = time.time()
+    _challenge_window[ip] = [t for t in _challenge_window[ip] if now - t < CHALLENGE_WINDOW]
+    if len(_challenge_window[ip]) >= CHALLENGE_RATE:
+        _banned_ips[ip] = now + BAN_DURATION
+        _challenge_window.pop(ip, None)
+        return jsonify({"error": f"请求过于频繁，已临时封禁 {BAN_DURATION} 秒"}), 429
+    _challenge_window[ip].append(now)
+    return None
+
+
+def record_verify_failure() -> tuple | None:
+    ip = _get_client_ip()
+    now = time.time()
+    _verify_failures[ip] = [t for t in _verify_failures[ip] if now - t < VERIFY_FAILURE_WINDOW]
+    _verify_failures[ip].append(now)
+    if len(_verify_failures[ip]) >= VERIFY_MAX_FAILURES:
+        _banned_ips[ip] = now + BAN_DURATION
+        _verify_failures.pop(ip, None)
+        return jsonify({"error": f"密码错误次数过多，已临时封禁 {BAN_DURATION} 秒"}), 429
+    return None
+
+
+def clear_verify_failures():
+    _verify_failures.pop(_get_client_ip(), None)
 HEADERS_TEMPLATE = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -56,8 +130,7 @@ def init_db():
                 value TEXT
             )"""
         )
-        for k, v in [("interval", str(DEFAULT_INTERVAL)), ("cookie", DEFAULT_COOKIE)]:
-            conn.execute("INSERT OR IGNORE INTO config(key, value) VALUES (?, ?)", (k, v))
+        conn.execute("INSERT OR IGNORE INTO config(key, value) VALUES (?, ?)", ("interval", str(DEFAULT_INTERVAL)))
 
         conn.execute(
             """CREATE TABLE IF NOT EXISTS videos (
@@ -65,9 +138,15 @@ def init_db():
                 bvid          TEXT NOT NULL UNIQUE,
                 title         TEXT,
                 score_enabled INTEGER DEFAULT 1,
+                paused        INTEGER DEFAULT 0,
                 added_at      TEXT NOT NULL
             )"""
         )
+        # Migration: add paused column if upgrading from older schema
+        try:
+            conn.execute("ALTER TABLE videos ADD COLUMN paused INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
         conn.execute(
             """CREATE TABLE IF NOT EXISTS snapshots (
@@ -110,7 +189,15 @@ def set_config(key: str, value: str):
 
 def list_videos() -> list[dict]:
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM videos ORDER BY id").fetchall()
+        rows = conn.execute(
+            """SELECT v.*,
+                      COUNT(s.id) as snapshot_count,
+                      MAX(s.timestamp) as last_snapshot_at
+               FROM videos v
+               LEFT JOIN snapshots s ON s.video_id = v.id
+               GROUP BY v.id
+               ORDER BY v.id"""
+        ).fetchall()
         return [dict_from_row(r) for r in rows]
 
 
@@ -126,6 +213,39 @@ def add_video(bvid: str, title: str = "") -> dict | None:
             return dict_from_row(row)
         except sqlite3.IntegrityError:
             return None
+
+
+def clear_scores(video_id: int):
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE snapshots SET score_play=NULL, score_interact=NULL,
+               score_fav=NULL, score_coin=NULL, score_like=NULL, score_total=NULL
+               WHERE video_id=?""",
+            (video_id,),
+        )
+        conn.commit()
+
+
+def recalc_scores(video_id: int):
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT id, view_count, like_count, danmaku, reply, coin, favorite
+               FROM snapshots WHERE video_id=? ORDER BY timestamp""",
+            (video_id,),
+        ).fetchall()
+        for r in rows:
+            scores = calculate_score(
+                r["view_count"] or 0, r["like_count"] or 0,
+                r["danmaku"] or 0, r["reply"] or 0,
+                r["coin"] or 0, r["favorite"] or 0,
+            )
+            conn.execute(
+                """UPDATE snapshots SET score_play=?, score_interact=?,
+                   score_fav=?, score_coin=?, score_like=?, score_total=?
+                   WHERE id=?""",
+                (*scores.values(), r["id"]),
+            )
+        conn.commit()
 
 
 def delete_video(video_id: int):
@@ -225,20 +345,14 @@ def calculate_score(view, like, danmaku, comment, coin, favorite):
 def build_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(HEADERS_TEMPLATE)
-    cookie_str = get_config("cookie") or ""
-    if cookie_str:
-        s.cookies.update({
-            k.strip(): v.strip()
-            for k, v in (c.split("=", 1) for c in cookie_str.split(";") if "=" in c)
-        })
     return s
 
 
 def fetch_video_detail(session: requests.Session, bvid: str) -> tuple[dict | None, str | None]:
     try:
         resp = session.get(
-            "https://api.bilibili.com/x/web-interface/wbi/view/detail",
-            params={"bvid": bvid, "need_view": "1"},
+            "https://api.bilibili.com/x/web-interface/view",
+            params={"bvid": bvid},
             timeout=15,
         )
         resp.raise_for_status()
@@ -318,9 +432,18 @@ _console = logging.StreamHandler()
 _console.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%H:%M:%S"))
 _console.setLevel(logging.INFO)
 
+import os as _os
+_log_dir = "logs"
+_os.makedirs(_log_dir, exist_ok=True)
+_log_file = _os.path.join(_log_dir, datetime.now().strftime("%Y%m%d_%H%M%S") + ".log")
+_file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+_file_handler.setLevel(logging.INFO)
+
 _app_log = logging.getLogger("bili_monitor")
 _app_log.addHandler(_log_handler)
 _app_log.addHandler(_console)
+_app_log.addHandler(_file_handler)
 _app_log.setLevel(logging.INFO)
 _app_log.propagate = False
 
@@ -339,13 +462,12 @@ def collect_video(session: requests.Session, video: dict, now: str):
     if detail is None:
         return False, f"{now}: [{bvid}] {err}"
 
-    view_data = detail["View"]
-    stat = view_data["stat"]
+    stat = detail["stat"]
 
     # 缓存 cid，首次更新标题
     if vid not in state.video_cid:
-        state.video_cid[vid] = view_data["cid"]
-        update_video(vid, title=view_data["title"])
+        state.video_cid[vid] = detail["cid"]
+        update_video(vid, title=detail["title"])
 
     # 在线人数
     online, _ = fetch_online_count(session, bvid, state.video_cid[vid])
@@ -394,7 +516,6 @@ def collect_video(session: requests.Session, video: dict, now: str):
 
 def monitor_loop():
     session = None
-    last_cookie = None
 
     while True:
         try:
@@ -406,27 +527,25 @@ def monitor_loop():
                 state.running = False
                 time.sleep(10)
                 session = None
-                last_cookie = None
                 continue
 
             state.running = True
 
-            current_cookie = get_config("cookie") or ""
-            if session is None or current_cookie != last_cookie:
+            if session is None:
                 session = build_session()
-                last_cookie = current_cookie
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             errors = []
-            for video in videos:
+            active = [v for v in videos if not v.get("paused")]
+            for i, video in enumerate(active):
+                if i > 0:
+                    time.sleep(1.5)  # stagger to avoid hammering the API
                 try:
                     ok, err = collect_video(session, video, now)
                     if not ok:
                         errors.append(err)
                         _app_log.warning("FAIL %s: %s", video['bvid'], err)
-                        if "风控校验失败" in err:
-                            _app_log.warning("HINT 建议在设置中填写或更新已登录的 Cookie")
                     else:
                         _app_log.info("OK   %s", video['bvid'])
                 except Exception as e:
@@ -451,24 +570,93 @@ def monitor_loop():
 app = Flask(__name__)
 
 
+# --- 认证 ---
+def verify_challenge(nonce: str, timestamp: str, response: str) -> bool:
+    try:
+        ts = int(timestamp)
+    except (ValueError, TypeError):
+        return False
+    if abs(int(time.time()) - ts) > 300:
+        return False
+    if nonce in _used_nonces:
+        return False
+    expected = hashlib.sha256(f"{nonce}{timestamp}{AUTH_PASSWORD}".encode()).hexdigest()
+    if not secrets.compare_digest(response, expected):
+        return False
+    _used_nonces.add(nonce)
+    if len(_used_nonces) > 1000:
+        _used_nonces.clear()
+    return True
+
+
+def check_auth():
+    if not AUTH_PASSWORD:
+        return None
+    nonce = request.headers.get("X-Auth-Nonce")
+    timestamp = request.headers.get("X-Auth-Timestamp")
+    response = request.headers.get("X-Auth-Response")
+    if not all([nonce, timestamp, response]):
+        return jsonify({"error": "需要密码验证"}), 401
+    if not verify_challenge(nonce, timestamp, response):
+        return jsonify({"error": "验证失败"}), 403
+    return None
+
+
+@app.route("/api/auth/check")
+def api_auth_check():
+    return jsonify({"protected": bool(AUTH_PASSWORD)})
+
+
+@app.route("/api/auth/challenge")
+def api_auth_challenge():
+    limit = check_challenge_rate()
+    if limit:
+        return limit
+    return jsonify({
+        "nonce": secrets.token_hex(16),
+        "timestamp": int(time.time()),
+    })
+
+
+@app.route("/api/auth/verify", methods=["POST"])
+def api_auth_verify():
+    if not AUTH_PASSWORD:
+        return jsonify({"ok": True, "protected": False})
+    ip = _get_client_ip()
+    ban = _check_ban(ip)
+    if ban:
+        return ban
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "缺少参数"}), 400
+    nonce = data.get("nonce")
+    timestamp = data.get("timestamp")
+    response = data.get("response")
+    if not all([nonce, timestamp, response]):
+        return jsonify({"error": "缺少参数"}), 400
+    if verify_challenge(str(nonce), str(timestamp), str(response)):
+        clear_verify_failures()
+        return jsonify({"ok": True, "protected": True})
+    ban = record_verify_failure()
+    if ban:
+        return ban
+    return jsonify({"error": "密码错误"}), 403
+
+
 # --- 配置 ---
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
     if request.method == "POST":
+        auth_err = check_auth()
+        if auth_err:
+            return auth_err
         data = request.get_json()
-        if data:
-            if "interval" in data and data["interval"]:
-                set_config("interval", str(int(data["interval"])))
-            if "cookie" in data:
-                c = data["cookie"].strip()
-                if c == "clear":
-                    set_config("cookie", "")
-                elif c:
-                    set_config("cookie", c)
+        if data and "interval" in data and data["interval"]:
+            val = int(data["interval"])
+            set_config("interval", str(max(30, val)))
         return jsonify({"ok": True})
     return jsonify({
         "interval": int(get_config("interval") or DEFAULT_INTERVAL),
-        "has_cookie": bool(get_config("cookie")),
     })
 
 
@@ -476,6 +664,9 @@ def api_config():
 @app.route("/api/videos", methods=["GET", "POST"])
 def api_videos():
     if request.method == "POST":
+        auth_err = check_auth()
+        if auth_err:
+            return auth_err
         data = request.get_json()
         if not data or not data.get("bvid"):
             return jsonify({"error": "bvid required"}), 400
@@ -496,6 +687,9 @@ def api_videos():
 
 @app.route("/api/videos/<int:video_id>", methods=["DELETE", "PATCH"])
 def api_video_detail(video_id: int):
+    auth_err = check_auth()
+    if auth_err:
+        return auth_err
     if request.method == "DELETE":
         delete_video(video_id)
         state.video_cid.pop(video_id, None)
@@ -506,8 +700,19 @@ def api_video_detail(video_id: int):
         return jsonify({"ok": True})
     if request.method == "PATCH":
         data = request.get_json()
-        if data and "score_enabled" in data:
-            update_video(video_id, score_enabled=1 if data["score_enabled"] else 0)
+        if data:
+            upd = {}
+            if "score_enabled" in data:
+                new_val = 1 if data["score_enabled"] else 0
+                upd["score_enabled"] = new_val
+                if new_val:
+                    recalc_scores(video_id)
+                else:
+                    clear_scores(video_id)
+            if "paused" in data:
+                upd["paused"] = 1 if data["paused"] else 0
+            if upd:
+                update_video(video_id, **upd)
         return jsonify({"ok": True})
     return jsonify({"error": "method not allowed"}), 405
 

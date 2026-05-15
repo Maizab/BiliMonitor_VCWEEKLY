@@ -1,5 +1,5 @@
 <script setup>
-import { ref, provide, onMounted, onUnmounted, watch } from 'vue'
+import { ref, provide, onMounted, onUnmounted, watch, computed } from 'vue'
 import { useAPI, setToastFn } from './composables/useAPI.js'
 import { useSSE } from './composables/useSSE.js'
 import StatusBar from './components/StatusBar.vue'
@@ -24,6 +24,7 @@ const currentHours = ref(24)
 const confirmRef = ref(null)
 const toastRef = ref(null)
 const pageReady = ref(false)
+const refreshKey = ref(0)
 
 provide('api', api)
 provide('status', status)
@@ -63,15 +64,34 @@ async function loadVideos() {
   try {
     videos.value = await api.getVideos()
   } catch (e) { return }
+  const lastId = localStorage.getItem('bili-selected-video')
   if (!selectedId.value && videos.value.length) {
-    selectedId.value = videos.value[0].id
+    const restored = lastId ? videos.value.find(v => v.id === Number(lastId)) : null
+    selectedId.value = restored ? restored.id : videos.value[0].id
   }
   if (selectedId.value && !videos.value.find(v => v.id === selectedId.value)) {
     selectedId.value = videos.value.length ? videos.value[0].id : null
   }
 }
 
-function onSelectVideo(id) { selectedId.value = id }
+const scoreEnabled = computed(() => {
+  const v = videos.value.find(v => v.id === selectedId.value)
+  return v ? !!v.score_enabled : true
+})
+
+function onSelectVideo(id) {
+  selectedId.value = id
+  localStorage.setItem('bili-selected-video', id)
+}
+async function onSettingsChange() {
+  await loadVideos()
+  refreshKey.value++
+  if (selectedId.value) {
+    dataLoading.value = true
+    try { latestSnapshot.value = await api.getLatest(selectedId.value) } catch (e) {}
+    dataLoading.value = false
+  }
+}
 
 onMounted(() => {
   connect()
@@ -95,7 +115,7 @@ onUnmounted(() => disconnect())
     @toggle-log="showLog = !showLog"
     @open-settings="showSettings = true"
   />
-  <SettingsModal v-if="pageReady" :show="showSettings" @close="showSettings = false" />
+  <SettingsModal v-if="pageReady" :show="showSettings" @close="showSettings = false" @change="onSettingsChange" />
   <main v-if="pageReady" class="app-main">
     <div class="columns">
       <aside class="sidebar">
@@ -103,15 +123,16 @@ onUnmounted(() => disconnect())
           :videos="videos"
           :selected-id="selectedId"
           @select="onSelectVideo"
-          @change="loadVideos"
         />
-        <DataCards :snapshot="latestSnapshot" :loading="dataLoading" />
+        <DataCards :snapshot="latestSnapshot" :loading="dataLoading" :score-enabled="scoreEnabled" />
       </aside>
       <section class="content">
         <ChartPanel
           :selected-id="selectedId"
           :snapshot="snapshot"
           :current-hours="currentHours"
+          :score-enabled="scoreEnabled"
+          :refresh-key="refreshKey"
           @update:hours="currentHours = $event"
         />
       </section>

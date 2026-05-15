@@ -3,10 +3,12 @@ import { ref } from 'vue'
 
 const show = ref(false)
 const msg = ref('')
+const btnText = ref('确认删除')
 let resolveFn = null
 
-function open(text) {
+function open(text, confirmText = '确认删除') {
   msg.value = text
+  btnText.value = confirmText
   show.value = true
   return new Promise(resolve => { resolveFn = resolve })
 }
@@ -25,7 +27,7 @@ defineExpose({ open })
           <p>{{ msg }}</p>
           <div class="actions">
             <button class="btn-cancel" @click="cancel">取消</button>
-            <button class="btn-primary" @click="confirm">确认删除</button>
+            <button class="btn-primary" @click="confirm">{{ btnText }}</button>
           </div>
         </div>
       </div>

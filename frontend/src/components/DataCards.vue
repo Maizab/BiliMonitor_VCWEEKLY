@@ -4,23 +4,28 @@ import { computed } from 'vue'
 const props = defineProps({
   snapshot: Object,
   loading: { type: Boolean, default: false },
+  scoreEnabled: { type: Boolean, default: true },
 })
 
 const fmt = n => n != null ? Number(n).toLocaleString() : '-'
 
 const cards = computed(() => {
   const d = props.snapshot || {}
-  return [
-    { label: '播放', value: fmt(d.view_count), score: d.score_play != null ? `得点 ${fmt(d.score_play)}` : '' },
+  const se = props.scoreEnabled
+  const items = [
+    { label: '播放', value: fmt(d.view_count), score: se && d.score_play != null ? `得点 ${fmt(d.score_play)}` : '' },
     { label: '弹幕', value: fmt(d.danmaku), score: '' },
     { label: '评论', value: fmt(d.reply), score: '' },
-    { label: '收藏', value: fmt(d.favorite), score: d.score_fav != null ? `得点 ${fmt(d.score_fav)}` : '' },
-    { label: '硬币', value: fmt(d.coin), score: d.score_coin != null ? `得点 ${fmt(d.score_coin)}` : '' },
-    { label: '点赞', value: fmt(d.like_count), score: d.score_like != null ? `得点 ${fmt(d.score_like)}` : '' },
+    { label: '收藏', value: fmt(d.favorite), score: se && d.score_fav != null ? `得点 ${fmt(d.score_fav)}` : '' },
+    { label: '硬币', value: fmt(d.coin), score: se && d.score_coin != null ? `得点 ${fmt(d.score_coin)}` : '' },
+    { label: '点赞', value: fmt(d.like_count), score: se && d.score_like != null ? `得点 ${fmt(d.score_like)}` : '' },
     { label: '分享', value: fmt(d.share), score: '' },
     { label: '正在观看', value: d.online_total ?? '-', score: '' },
-    { label: '最终得点', value: d.score_total != null ? fmt(d.score_total) : '-', score: '', total: true },
   ]
+  if (se) {
+    items.push({ label: '最终得点', value: d.score_total != null ? fmt(d.score_total) : '-', score: '', total: true })
+  }
+  return items
 })
 </script>
 
