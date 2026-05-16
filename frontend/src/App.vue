@@ -9,6 +9,7 @@ import Toast from './components/Toast.vue'
 import VideoManager from './components/VideoManager.vue'
 import DataCards from './components/DataCards.vue'
 import ChartPanel from './components/ChartPanel.vue'
+import ExportModal from './components/ExportModal.vue'
 import LogBar from './components/LogBar.vue'
 
 const api = useAPI()
@@ -18,6 +19,7 @@ const videos = ref([])
 const selectedId = ref(null)
 const showSettings = ref(false)
 const showLog = ref(false)
+const showExport = ref(false)
 const latestSnapshot = ref(null)
 const dataLoading = ref(false)
 const currentHours = ref(24)
@@ -81,10 +83,9 @@ async function loadVideos() {
   }
 }
 
-const scoreEnabled = computed(() => {
-  const v = videos.value.find(v => v.id === selectedId.value)
-  return v ? !!v.score_enabled : true
-})
+const selectedVideo = computed(() => videos.value.find(v => v.id === selectedId.value))
+const scoreEnabled = computed(() => selectedVideo.value ? !!selectedVideo.value.score_enabled : true)
+const selectedVideoTitle = computed(() => selectedVideo.value ? (selectedVideo.value.title || selectedVideo.value.bvid) : '')
 
 function onSelectVideo(id) {
   selectedId.value = id
@@ -119,9 +120,11 @@ onUnmounted(() => disconnect())
     :status="status"
     :show-log="showLog"
     @toggle-log="showLog = !showLog"
+    @open-export="showExport = true"
     @open-settings="showSettings = true"
   />
   <SettingsModal v-if="pageReady" :show="showSettings" @close="showSettings = false" @change="onSettingsChange" />
+  <ExportModal v-if="pageReady" :show="showExport" :video-id="selectedId" :video-title="selectedVideoTitle" @close="showExport = false" />
   <main v-if="pageReady" class="app-main">
     <div class="columns">
       <aside class="sidebar">
@@ -186,6 +189,7 @@ onUnmounted(() => disconnect())
 @media (max-width: 1100px) {
   .columns { flex-direction: column; }
   .sidebar { width: 100%; }
+  .content { flex: none; }
   .app-main { padding: 10px 12px; }
 }
 </style>

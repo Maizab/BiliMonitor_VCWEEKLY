@@ -89,9 +89,25 @@ const API = {
     const { data } = await http.get('/latest', { params: { video_id: videoId } })
     return data
   },
-  async getSnapshots(videoId, hours) {
-    const { data } = await http.get('/snapshots', { params: { video_id: videoId, hours } })
+  async getSnapshots(videoId, hours, start, end) {
+    const params = { video_id: videoId }
+    if (start && end) { params.start = start; params.end = end }
+    else if (start) { params.start = start }
+    else if (end) { params.end = end }
+    else { params.hours = hours || 24 }
+    const { data } = await http.get('/snapshots', { params })
     return data
+  },
+  async exportXlsx(videoId, startTime, endTime, tzOffset) {
+    const resp = await http.get('/export', {
+      params: { video_id: videoId, start: startTime, end: endTime, tz: tzOffset },
+      responseType: 'blob',
+    })
+    // 从 Content-Disposition 头部提取后端生成的文件名
+    const cd = resp.headers['content-disposition'] || ''
+    const m = cd.match(/filename\*=UTF-8''(.+)/)
+    const filename = m ? decodeURIComponent(m[1]) : 'export.xlsx'
+    return { blob: resp.data, filename }
   },
   getAuthCheck,
   verifyPassword,

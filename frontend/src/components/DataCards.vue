@@ -20,7 +20,7 @@ const cards = computed(() => {
     { label: '硬币', value: fmt(d.coin), score: se && d.score_coin != null ? `得点 ${fmt(d.score_coin)}` : '' },
     { label: '点赞', value: fmt(d.like_count), score: se && d.score_like != null ? `得点 ${fmt(d.score_like)}` : '' },
     { label: '分享', value: fmt(d.share), score: '' },
-    { label: '正在观看', value: d.online_total ?? '-', score: '' },
+    { label: '正在观看人数', value: d.online_total ?? '-', score: '' },
   ]
   if (se) {
     items.push({ label: '最终得点', value: d.score_total != null ? fmt(d.score_total) : '-', score: '', total: true })

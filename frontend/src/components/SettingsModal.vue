@@ -10,6 +10,7 @@ const interval = ref(30)
 const saving = ref(false)
 const saved = ref(false)
 const loading = ref(false)
+const loadedOnce = ref(false)
 
 // Auth state
 const authReady = ref(false)
@@ -22,13 +23,14 @@ const videos = ref([])
 const newBvid = ref('')
 
 async function loadCfg() {
-  loading.value = true
+  if (!loadedOnce.value) loading.value = true
   try {
     const cfg = await api.getConfig()
     interval.value = cfg.interval || 30
     videos.value = await api.getVideos()
   } catch (e) { /* ignore */ }
   loading.value = false
+  loadedOnce.value = true
 }
 
 async function doVerify() {
@@ -60,11 +62,10 @@ watch(() => props.show, async (v) => {
         const check = await api.getAuthCheck()
         authReady.value = !check.protected
       } catch (e) {
-        authReady.value = true // allow access if check fails
+        authReady.value = true
       }
     }
     if (authReady.value) {
-      loading.value = true
       await loadCfg()
     }
   }

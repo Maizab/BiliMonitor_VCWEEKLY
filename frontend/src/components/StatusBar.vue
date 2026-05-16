@@ -6,19 +6,26 @@ const props = defineProps({
   showLog: Boolean,
 })
 
-const emit = defineEmits(['toggleLog', 'openSettings'])
+const emit = defineEmits(['toggleLog', 'openSettings', 'openExport'])
 
 const dotClass = computed(() => {
   if (!props.status?.running) return 'dot red'
   return props.status?.last_error ? 'dot red' : 'dot green'
 })
 
+function fmtLastFetch(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  const pad = n => String(n).padStart(2, '0')
+  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 const msg = computed(() => {
   const s = props.status || {}
   if (!s.running) return '等待配置 · 请添加视频开始监控'
   if (!s.last_fetch) return '运行中 · 等待首轮采集...'
   const prefix = s.last_error ? '异常' : '运行中'
-  return `${prefix} · 上次 ${s.last_fetch}` + (s.last_error ? ` · ${s.last_error}` : '')
+  return `${prefix} · 上次 ${fmtLastFetch(s.last_fetch)}` + (s.last_error ? ` · ${s.last_error}` : '')
 })
 </script>
 
@@ -28,6 +35,7 @@ const msg = computed(() => {
     <span :class="dotClass"></span>
     <span class="status-text">{{ msg }}</span>
     <button :class="['header-btn', { active: showLog }]" @click="emit('toggleLog')">日志</button>
+    <button class="header-btn" @click="emit('openExport')">导出</button>
     <button class="header-btn" @click="emit('openSettings')">设置</button>
   </header>
 </template>

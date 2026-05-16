@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, inject, nextTick, reactive, computed } from 'vue'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
+import DateTimePicker from './DateTimePicker.vue'
 
 const props = defineProps({
   selectedId: Number,
@@ -53,10 +54,10 @@ function saveToggles(v) {
 
 const toggles = reactive(loadToggles())
 const hoursOptions = [1, 6, 24, 72, 168]
-const currentH = ref(24)
 const charts = {}
 const containerRef = ref(null)
 let historyData = []
+const hasData = ref(false)
 const loading = ref(true)
 
 const ttVisible = ref(false)
@@ -65,11 +66,62 @@ const ttItems = ref([])
 const ttX = ref(0)
 const ttY = ref(0)
 
+// 范围选择持久化
+const RANGE_KEY = 'chart-range'
+
+function loadRange() {
+  try {
+    const raw = localStorage.getItem(RANGE_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch (e) { /* ignore */ }
+  return { hours: 24, customMode: false, customStart: '', customEnd: '', customEndLive: true }
+}
+
+function saveRange() {
+  try {
+    localStorage.setItem(RANGE_KEY, JSON.stringify({
+      hours: currentH.value,
+      customMode: customMode.value,
+      customStart: customStart.value,
+      customEnd: customEnd.value,
+      customEndLive: customEndLive.value,
+    }))
+  } catch (e) { /* ignore */ }
+}
+
+const saved = loadRange()
+const currentH = ref(saved.hours || 24)
+const customMode = ref(saved.customMode || false)
+const customStart = ref(saved.customStart || new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString())
+const customEnd = ref(saved.customEnd || new Date().toISOString())
+const customEndLive = ref(saved.customEndLive !== false)
+
 watch(toggles, saveToggles, { deep: true })
 
 function setHours(h) {
+  customMode.value = false
   currentH.value = h
   emit('update:hours', h)
+  saveRange()
+  loadHistory()
+}
+
+function enterCustom() {
+  customMode.value = true
+  customStart.value = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString()
+  customEnd.value = new Date().toISOString()
+  customEndLive.value = true
+  saveRange()
+  loadHistory()
+}
+
+function onCustomParamChange() {
+  if (!customEndLive.value && customStart.value && customEnd.value && customStart.value >= customEnd.value) {
+    const s = new Date(customStart.value)
+    const e = new Date(s.getTime() + 3600 * 1000)
+    customEnd.value = e.toISOString()
+  }
+  saveRange()
   loadHistory()
 }
 
@@ -130,21 +182,54 @@ function buildData(data, key) {
   const raw = []
   const smoothedVals = smoothSeries(data, key, 17)
   for (let i = 0; i < data.length; i++) {
+    const v = smoothedVals[i]
     raw.push([
       new Date(data[i].timestamp).getTime() / 1000,
-      smoothedVals[i],
+      v == null ? null : v,
     ])
   }
-  // Downsample for visual smoothness — desktop with many points looks jagged
-  const bucket = lttb(raw, 200)
-  const timestamps = bucket.map(p => p[0])
-  const values = bucket.map(p => p[1])
+
+  // Split into segments at gaps > 10 min, so downsampling doesn't bridge real data gaps
+  const segments = []
+  let seg = []
+  for (let i = 0; i < raw.length; i++) {
+    if (i > 0 && raw[i][0] - raw[i - 1][0] > 600) {
+      if (seg.length) segments.push(seg)
+      seg = []
+    }
+    seg.push(raw[i])
+  }
+  if (seg.length) segments.push(seg)
+
+  const total = raw.length
+  const timestamps = []
+  const values = []
+  for (let si = 0; si < segments.length; si++) {
+    const seg = segments[si]
+    const n = Math.max(2, Math.round(seg.length / total * 200))
+    const sampled = seg.length <= 2 ? seg : lttb(seg, n)
+    for (const p of sampled) {
+      timestamps.push(p[0])
+      values.push(p[1])
+    }
+    // Null gap between segments
+    if (si < segments.length - 1) {
+      timestamps.push(null)
+      values.push(null)
+    }
+  }
   return [timestamps, values]
 }
 
 function valFormatter(v) {
   if (v == null) return '-'
   return v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(0)
+}
+
+// 预计算时间戳数组，供二分查找复用
+let historyTimestamps = []
+function rebuildTimestamps() {
+  historyTimestamps = historyData.map(d => new Date(d.timestamp).getTime())
 }
 
 // Shared tooltip update — called from setCursor hook on the first chart
@@ -154,12 +239,25 @@ function updateTooltip(u) {
     return
   }
   const ts = u.posToVal(u.cursor.left, 'x') * 1000
-  let closest = null, minDiff = Infinity
-  for (let i = 0; i < historyData.length; i++) {
-    const diff = Math.abs(new Date(historyData[i].timestamp).getTime() - ts)
-    if (diff < minDiff) { minDiff = diff; closest = historyData[i] }
+
+  // 二分查找最近的时间戳
+  let lo = 0, hi = historyTimestamps.length - 1, closest = null
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1
+    if (historyTimestamps[mid] < ts) { lo = mid + 1 }
+    else { hi = mid - 1 }
   }
-  if (!closest || minDiff > 120000) { ttVisible.value = false; return }
+  // lo 是第一个 >= ts 的索引，比较 lo-1 和 lo
+  const cand = []
+  if (lo > 0) cand.push(lo - 1)
+  if (lo < historyTimestamps.length) cand.push(lo)
+  let minDiff = Infinity, bestIdx = -1
+  for (const idx of cand) {
+    const diff = Math.abs(historyTimestamps[idx] - ts)
+    if (diff < minDiff) { minDiff = diff; bestIdx = idx }
+  }
+  if (bestIdx < 0 || minDiff > 120000) { ttVisible.value = false; return }
+  closest = historyData[bestIdx]
 
   ttTime.value = formatTs(closest.timestamp)
   const se = props.scoreEnabled
@@ -173,10 +271,10 @@ function updateTooltip(u) {
 
   const rect = u.root.getBoundingClientRect()
   const tipW = 220
-  const M = 14
-  let tx = rect.left + u.cursor.left + M
-  if (tx + tipW > window.innerWidth - 4) tx = rect.left + u.cursor.left - tipW - M
-  if (tx < 4) tx = 4
+  // 居中于光标竖线，贴近视口边界时自动贴边
+  let tx = rect.left + u.cursor.left - tipW / 2
+  if (tx < 8) tx = 8
+  if (tx + tipW > window.innerWidth - 8) tx = window.innerWidth - tipW - 8
   ttX.value = tx
   ttY.value = rect.top - 10
   ttVisible.value = true
@@ -213,7 +311,7 @@ function makeOpts(m) {
           grad.addColorStop(1, m.color + '02')
           return grad
         },
-        spanGaps: true,
+        spanGaps: false,
         points: { show: false },
         value: (self, v) => fmtVal(self, v),
       },
@@ -259,9 +357,19 @@ async function loadHistory() {
   loading.value = true
   destroyAll()
   historyData = []
+  hasData.value = false
   try {
-    const data = await api.getSnapshots(props.selectedId, currentH.value)
+    let data
+    if (customMode.value) {
+      const s = customStart.value
+      const e = customEndLive.value ? null : (customEnd.value || null)
+      data = await api.getSnapshots(props.selectedId, null, s, e)
+    } else {
+      data = await api.getSnapshots(props.selectedId, currentH.value)
+    }
     historyData = data
+    hasData.value = data.length > 0
+    rebuildTimestamps()
     renderAll()
   } finally {
     loading.value = false
@@ -297,16 +405,28 @@ function renderAll() {
 
 watch(() => props.snapshot, s => {
   if (!s || s.video_id !== props.selectedId) return
+
+  // In custom history mode (fixed end), don't append live data
+  if (customMode.value && !customEndLive.value) return
+
   historyData.push({
     timestamp: s.timestamp,
     view_count: s.view_count, danmaku: s.danmaku, reply: s.reply,
     favorite: s.favorite, coin: s.coin, share: s.share, like_count: s.like_count,
-    online_total: s.online_total, online_count: s.online_count,
+    online_total: s.online_total,
     score_play: s.score_play, score_interact: s.score_interact, score_fav: s.score_fav,
     score_coin: s.score_coin, score_like: s.score_like, score_total: s.score_total,
   })
-  const cutoffTime = Date.now() - currentH.value * 3600 * 1000
+
+  let cutoffTime
+  if (customMode.value) {
+    cutoffTime = new Date(customStart.value).getTime()
+  } else {
+    cutoffTime = Date.now() - currentH.value * 3600 * 1000
+  }
   historyData = historyData.filter(d => new Date(d.timestamp).getTime() >= cutoffTime)
+  hasData.value = historyData.length > 0
+  rebuildTimestamps()
   const se = props.scoreEnabled
   Object.entries(METRICS).forEach(([k]) => {
     if (!toggles[k] || !charts[k]) return
@@ -373,8 +493,9 @@ onUnmounted(() => {
     <div class="toolbar">
       <span class="tool-label">范围</span>
       <button v-for="h in hoursOptions" :key="h"
-        :class="['range-btn', { active: currentH === h }]" @click="setHours(h)"
+        :class="['range-btn', { active: !customMode && currentH === h }]" @click="setHours(h)"
       >{{ h === 1 ? '1h' : h === 6 ? '6h' : h === 24 ? '24h' : h === 72 ? '3d' : '7d' }}</button>
+      <button :class="['range-btn', { active: customMode }]" @click="enterCustom">自定义</button>
       <span class="sep"></span>
       <span class="tool-group">
         <span class="tool-label">显示</span>
@@ -386,10 +507,32 @@ onUnmounted(() => {
         </label>
       </span>
     </div>
+
+    <!-- Custom range controls -->
+    <div v-if="customMode" class="custom-range">
+      <div class="custom-row">
+        <div class="custom-field">
+          <span class="custom-label">开始</span>
+          <DateTimePicker v-model="customStart" placeholder="开始时间" @update:model-value="onCustomParamChange" />
+        </div>
+        <div class="custom-field">
+          <span class="custom-label">结束</span>
+          <DateTimePicker v-if="!customEndLive" v-model="customEnd" placeholder="结束时间" @update:model-value="onCustomParamChange" />
+          <span v-else class="custom-live-label">实时更新中</span>
+        </div>
+        <div class="custom-toggle">
+          <button
+            :class="['live-toggle', { live: customEndLive }]"
+            @click="customEndLive = !customEndLive; onCustomParamChange()"
+          >{{ customEndLive ? '切换为历史时刻' : '切换为实时' }}</button>
+        </div>
+      </div>
+    </div>
+
     <div class="charts-scroll" ref="containerRef">
       <div v-if="loading" class="overlay-spinner"><span class="spinner"></span></div>
       <template v-for="[k, m] in visibleMetrics" :key="k">
-        <div v-show="toggles[k]" class="chart-row">
+        <div v-show="toggles[k] && hasData" class="chart-row">
           <div class="row-label">
             <span class="row-dot" :style="{ background: m.color }"></span>
             {{ m.label }}
@@ -398,7 +541,7 @@ onUnmounted(() => {
         </div>
       </template>
       <div v-if="!loading && !selectedId" class="empty">请选择一个视频开始监控</div>
-      <div v-else-if="!loading && historyData.length === 0" class="empty">暂无历史数据</div>
+      <div v-else-if="!loading && !hasData" class="empty">暂无历史数据</div>
     </div>
     <Teleport to="body">
       <Transition name="tt-fade">
@@ -423,10 +566,29 @@ onUnmounted(() => {
 }
 .toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
 .tool-label { font-size: 12px; font-weight: 600; color: #555; }
+
+/* Custom range */
+.custom-range {
+  background: #f8fafc; border: 1px solid #e8e8e8; border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 8px;
+}
+.custom-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.custom-field { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 160px; max-width: 260px; }
+.custom-label { font-size: 12px; font-weight: 600; color: #555; white-space: nowrap; flex-shrink: 0; }
+.custom-live-label { font-size: 13px; color: #4f8ef7; font-weight: 500; padding: 8px 0; }
+.custom-toggle { flex-shrink: 0; }
+.live-toggle {
+  border: 1px solid #e0e0e0; background: #fff; border-radius: 5px;
+  padding: 4px 13px; font-size: 12px; cursor: pointer; font-weight: 500;
+  color: #888; transition: all .15s; white-space: nowrap;
+  -webkit-tap-highlight-color: transparent; outline: none; line-height: 1.5;
+}
+.live-toggle:hover { border-color: #4f8ef7; color: #4f8ef7; }
+.live-toggle.live { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
 .range-btn {
   border: 1px solid #e0e0e0; background: #fff; border-radius: 5px; padding: 4px 13px;
   font-size: 12px; cursor: pointer; font-weight: 500; color: #666; transition: all .15s;
-  -webkit-tap-highlight-color: transparent; outline: none;
+  -webkit-tap-highlight-color: transparent; outline: none; line-height: 1.5;
 }
 .range-btn:hover { border-color: #4f8ef7; color: #4f8ef7; }
 .range-btn.active { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
@@ -489,12 +651,16 @@ onUnmounted(() => {
 .tt-fade-enter-from, .tt-fade-leave-to { opacity: 0; }
 
 @media (max-width: 640px) {
-  .charts-scroll { overflow-y: visible; }
-  .mini-chart { height: 70px; }
+  .chart-panel { min-height: 0; }
+  .charts-scroll { overflow: visible; }
+  .mini-chart { height: 80px; }
   .row-label { width: 42px; font-size: 10px; }
   .toolbar { gap: 4px; }
   .tool-group { gap: 4px; }
   .custom-tooltip { right: 4px; padding: 8px 10px; min-width: 140px; font-size: 11px; }
+  .custom-range { padding: 8px 10px; }
+  .custom-row { gap: 8px; }
+  .custom-field { min-width: 0; flex: 1 1 100%; max-width: none; }
 }
 </style>
 
