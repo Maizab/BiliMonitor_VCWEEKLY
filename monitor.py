@@ -168,7 +168,7 @@ def monitor_loop():
             if session is None:
                 session = build_session()
 
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
             errors = []
             active = [v for v in videos if not v.get("paused")]
@@ -195,6 +195,6 @@ def monitor_loop():
             })
 
         except Exception as e:
-            state.last_error = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}: {e}"
+            state.last_error = f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}: {e}"
 
         time.sleep(interval)

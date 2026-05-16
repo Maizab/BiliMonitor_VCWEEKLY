@@ -112,7 +112,7 @@ def add_video(bvid: str, title: str = "") -> dict | None:
         try:
             conn.execute(
                 "INSERT INTO videos (bvid, title, added_at) VALUES (?, ?, ?)",
-                (bvid, title, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (bvid, title, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM videos WHERE bvid=?", (bvid,)).fetchone()
@@ -186,7 +186,7 @@ def get_latest_snapshot(video_id: int) -> dict | None:
 def _normalize_ts(ts_str: str, clamp_to_now: bool = False) -> str:
     """将时间戳字符串标准化为数据库格式（YYYY-MM-DD HH:MM:SS）。
     同时支持 ISO 和本地格式。可选将未来时间截断为当前时间。"""
-    now = datetime.now()
+    now = datetime.utcnow()
     try:
         s = ts_str.replace('Z', '+00:00').replace('T', ' ')
         # 截断到秒精度
@@ -196,7 +196,19 @@ def _normalize_ts(ts_str: str, clamp_to_now: bool = False) -> str:
             dt = now
         return dt.strftime('%Y-%m-%d %H:%M:%S')
     except (ValueError, TypeError):
-        return ts_str[:19] if len(ts_str) >= 19 else ts_str
+        # 尝试解析带时区的 ISO 8601（如 +08:00）
+        try:
+            s2 = ts_str.replace('T', ' ')[:19]
+            dt = datetime.strptime(s2, '%Y-%m-%d %H:%M:%S')
+            # 粗略处理：若含 +08:00 偏移则减 8 小时得到 UTC
+            if '+08:00' in ts_str or '+08' in ts_str:
+                from datetime import timedelta
+                dt = dt - timedelta(hours=8)
+            if clamp_to_now and dt > now:
+                dt = now
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except (ValueError, TypeError):
+            return ts_str[:19] if len(ts_str) >= 19 else ts_str
 
 
 def get_snapshots(video_id: int, hours: int = None, start: str = None, end: str = None) -> list[dict]:
@@ -218,7 +230,7 @@ def get_snapshots(video_id: int, hours: int = None, start: str = None, end: str 
         params = (video_id, end)
     else:
         hours = hours or 24
-        since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        since = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
         where = "video_id=? AND timestamp >= ?"
         params = (video_id, since)
     with get_db() as conn:

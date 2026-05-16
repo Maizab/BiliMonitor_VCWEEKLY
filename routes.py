@@ -315,7 +315,7 @@ def register_routes(app):
         ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
 
         ws.merge_cells("A2:O2")
-        ws["A2"] = f"导出时间范围: {start or '全部'} ~ {end or '全部'}      导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        ws["A2"] = f"导出时间范围: {start or '全部'} ~ {end or '全部'}（UTC）      导出时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
         ws["A2"].font = Font(name="微软雅黑", size=10, color="888888")
 
         # 表头
