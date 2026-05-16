@@ -8,7 +8,7 @@ from collections import deque
 from datetime import datetime
 
 from config import _config
-from database import get_config, list_videos, update_video, calculate_score, get_db
+from database import get_config, list_videos, update_video, calculate_score, get_db, _ts_to_iso
 from bilibili import build_session, fetch_video_detail, fetch_online_count
 
 # ============ 监控状态 ============
@@ -135,7 +135,7 @@ def collect_video(session, video: dict, now: str):
 
     broadcast("snapshot", {
         "video_id": vid,
-        "timestamp": now,
+        "timestamp": _ts_to_iso(now),
         "view_count": view, "danmaku": danmaku, "reply": reply,
         "favorite": favorite, "coin": coin, "share": share, "like_count": like,
         "online_total": online.get("total") if online else None,
@@ -190,7 +190,7 @@ def monitor_loop():
             state.last_error = "; ".join(errors) if errors else None
             broadcast("status", {
                 "running": state.running,
-                "last_fetch": state.last_fetch,
+                "last_fetch": _ts_to_iso(state.last_fetch),
                 "last_error": state.last_error,
             })
 

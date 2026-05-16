@@ -5,6 +5,13 @@ from contextlib import contextmanager
 from config import _config
 
 
+def _ts_to_iso(ts):
+    """将 DB 中的 UTC 时间字符串转为 ISO 8601 UTC 格式，前端才能正确识别为 UTC"""
+    if not ts:
+        return ts
+    return ts.replace(' ', 'T') + 'Z'
+
+
 def dict_from_row(row):
     """将 sqlite3.Row 转为普通字典"""
     if row is None:
@@ -104,7 +111,13 @@ def list_videos() -> list[dict]:
                GROUP BY v.id
                ORDER BY v.id"""
         ).fetchall()
-        return [dict_from_row(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict_from_row(r)
+            if d.get("last_snapshot_at"):
+                d["last_snapshot_at"] = _ts_to_iso(d["last_snapshot_at"])
+            result.append(d)
+        return result
 
 
 def add_video(bvid: str, title: str = "") -> dict | None:
@@ -180,7 +193,10 @@ def get_latest_snapshot(video_id: int) -> dict | None:
             "SELECT * FROM snapshots WHERE video_id=? ORDER BY timestamp DESC LIMIT 1",
             (video_id,),
         ).fetchone()
-        return dict_from_row(row)
+        d = dict_from_row(row)
+        if d:
+            d["timestamp"] = _ts_to_iso(d["timestamp"])
+        return d
 
 
 def _normalize_ts(ts_str: str, clamp_to_now: bool = False) -> str:
@@ -244,7 +260,12 @@ def get_snapshots(video_id: int, hours: int = None, start: str = None, end: str 
                ORDER BY timestamp ASC""",
             params,
         ).fetchall()
-        return [dict_from_row(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict_from_row(r)
+            d["timestamp"] = _ts_to_iso(d["timestamp"])
+            result.append(d)
+        return result
 
 
 # ============ 得分计算 ============

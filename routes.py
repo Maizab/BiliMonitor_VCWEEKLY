@@ -3,7 +3,7 @@ import json
 import queue
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from urllib.parse import quote
 
@@ -14,7 +14,7 @@ from database import (
     dict_from_row, get_db, get_config, set_config,
     list_videos, add_video, delete_video, update_video,
     clear_scores, recalc_scores, get_latest_snapshot, get_snapshots,
-    _normalize_ts,
+    _normalize_ts, _ts_to_iso,
 )
 from ratelimit import (
     check_challenge_rate, record_verify_failure, clear_verify_failures,
@@ -137,7 +137,7 @@ def register_routes(app):
             state.last_error = None
             broadcast("status", {
                 "running": True,
-                "last_fetch": state.last_fetch,
+                "last_fetch": _ts_to_iso(state.last_fetch) if state.last_fetch else None,
                 "last_error": None,
             })
             broadcast("videos", list_videos())
@@ -200,7 +200,7 @@ def register_routes(app):
         has_videos = bool(list_videos())
         return jsonify({
             "running": state.running or has_videos,
-            "last_fetch": state.last_fetch,
+            "last_fetch": _ts_to_iso(state.last_fetch) if state.last_fetch else None,
             "last_error": state.last_error,
         })
 
@@ -292,6 +292,20 @@ def register_routes(app):
         if not snapshots:
             return jsonify({"error": "所选时间范围内无数据"}), 404
 
+        # 客户端时区偏移（分钟），默认 0 即 UTC
+        tz_offset = request.args.get("tz", 0, type=int)
+
+        def _fmt_local_ts(ts_str):
+            """将 DB 中的 UTC 时间字符串转为客户端时区用于 XLSX 展示"""
+            try:
+                dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                dt = dt + timedelta(minutes=tz_offset)
+                return dt.strftime('%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError):
+                return ts_str
+
+        tz_label = f"UTC{tz_offset//60:+d}" if tz_offset % 60 == 0 else f"UTC{tz_offset/60:+.1f}"
+
         wb = Workbook()
         ws = wb.active
         ws.title = "视频数据"
@@ -314,8 +328,10 @@ def register_routes(app):
         ws["A1"].font = Font(name="微软雅黑", size=13, bold=True)
         ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
 
+        d_start = _fmt_local_ts(start) if start else '全部'
+        d_end = _fmt_local_ts(end) if end else '全部'
         ws.merge_cells("A2:O2")
-        ws["A2"] = f"导出时间范围: {start or '全部'} ~ {end or '全部'}（UTC）      导出时间: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        ws["A2"] = f"导出时间范围: {d_start} ~ {d_end}（{tz_label}）      导出时间: {(_fmt_local_ts(datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')))}（{tz_label}）"
         ws["A2"].font = Font(name="微软雅黑", size=10, color="888888")
 
         # 表头
@@ -335,7 +351,7 @@ def register_routes(app):
         for i, s in enumerate(snapshots):
             row = i + 5
             vals = [
-                s["timestamp"],
+                _fmt_local_ts(s["timestamp"]),
                 s["view_count"], s["danmaku"], s["reply"], s["favorite"],
                 s["coin"], s["like_count"], s["share"],
                 s["online_total"],
@@ -364,9 +380,21 @@ def register_routes(app):
         wb.save(output)
         output.seek(0)
 
-        fstart = start[:10].replace('-', '') if start else 'begin'
-        fend = end[:10].replace('-', '') if end else 'end'
-        filename = f"{fstart}_{fend}.xlsx"
+        def _fmt_fn_ts(ts_str):
+            """将时间字符串转为文件名安全格式"""
+            try:
+                dt = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                dt = dt + timedelta(minutes=tz_offset)
+                return dt.strftime('%Y%m%d_%H%M%S')
+            except (ValueError, TypeError):
+                return ts_str[:10].replace('-', '') if ts_str else ''
+
+        title = video.get('title', video['bvid']) or video['bvid']
+        # 去除文件名非法字符
+        title = title.replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
+        fstart = _fmt_fn_ts(start) if start else 'begin'
+        fend = _fmt_fn_ts(end) if end else 'end'
+        filename = f"{title}_{fstart}_to_{fend}.xlsx"
         return Response(
             output.getvalue(),
             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -385,7 +413,7 @@ def register_routes(app):
                 payload = json.dumps({
                     "status": {
                         "running": state.running or has_videos,
-                        "last_fetch": state.last_fetch,
+                        "last_fetch": _ts_to_iso(state.last_fetch) if state.last_fetch else None,
                         "last_error": state.last_error,
                     },
                     "log": _log_handler.tail(200),
