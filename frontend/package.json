@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "axios": "^1.16.0",
-    "echarts": "^6.0.0",
+    "crypto-js": "^4.2.0",
     "uplot": "^1.6.32",
     "vue": "^3.5.34"
   },

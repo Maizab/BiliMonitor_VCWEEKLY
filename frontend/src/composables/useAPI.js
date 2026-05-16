@@ -1,10 +1,12 @@
 import axios from 'axios'
+import SHA256 from 'crypto-js/sha256'
 
 let _toast = null
 
 export function setToastFn(fn) { _toast = fn }
 
-const http = axios.create({ timeout: 15000 })
+const apiBase = import.meta.env.VITE_API_BASE || '/api'
+const http = axios.create({ timeout: 15000, baseURL: apiBase })
 
 http.interceptors.response.use(
   r => r,
@@ -15,27 +17,25 @@ http.interceptors.response.use(
   }
 )
 
-async function sha256(message) {
-  const buf = new TextEncoder().encode(message)
-  const hash = await crypto.subtle.digest('SHA-256', buf)
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('')
+function sha256(message) {
+  return SHA256(message).toString()
 }
 
 async function getChallenge() {
-  const { data } = await http.get('/api/auth/challenge')
+  const { data } = await http.get('/auth/challenge')
   return data
 }
 
 async function getAuthCheck() {
-  const { data } = await http.get('/api/auth/check')
+  const { data } = await http.get('/auth/check')
   return data
 }
 
 async function getAuthHeaders() {
-  const pwd = sessionStorage.getItem('bili-auth-password')
+  const pwd = sessionStorage.getItem('auth-password')
   if (!pwd) return {}
   const ch = await getChallenge()
-  const resp = await sha256(`${ch.nonce}${ch.timestamp}${pwd}`)
+  const resp = sha256(`${ch.nonce}${ch.timestamp}${pwd}`)
   return {
     'X-Auth-Nonce': ch.nonce,
     'X-Auth-Timestamp': String(ch.timestamp),
@@ -45,8 +45,8 @@ async function getAuthHeaders() {
 
 async function verifyPassword(password) {
   const ch = await getChallenge()
-  const resp = await sha256(`${ch.nonce}${ch.timestamp}${password}`)
-  const { data } = await http.post('/api/auth/verify', {
+  const resp = sha256(`${ch.nonce}${ch.timestamp}${password}`)
+  const { data } = await http.post('/auth/verify', {
     nonce: ch.nonce,
     timestamp: ch.timestamp,
     response: resp,
@@ -56,41 +56,41 @@ async function verifyPassword(password) {
 
 const API = {
   async getConfig() {
-    const { data } = await http.get('/api/config')
+    const { data } = await http.get('/config')
     return data
   },
   async saveConfig(interval) {
     const headers = await getAuthHeaders()
-    const { data } = await http.post('/api/config', { interval }, { headers })
+    const { data } = await http.post('/config', { interval }, { headers })
     return data
   },
   async getVideos() {
-    const { data } = await http.get('/api/videos')
+    const { data } = await http.get('/videos')
     return data
   },
   async addVideo(bvid) {
     const headers = await getAuthHeaders()
-    const { data } = await http.post('/api/videos', { bvid }, { headers })
+    const { data } = await http.post('/videos', { bvid }, { headers })
     return data
   },
   async deleteVideo(id) {
     const headers = await getAuthHeaders()
-    await http.delete(`/api/videos/${id}`, { headers })
+    await http.delete(`/videos/${id}`, { headers })
   },
   async toggleScore(id, enabled) {
     const headers = await getAuthHeaders()
-    await http.patch(`/api/videos/${id}`, { score_enabled: enabled }, { headers })
+    await http.patch(`/videos/${id}`, { score_enabled: enabled }, { headers })
   },
   async togglePaused(id, paused) {
     const headers = await getAuthHeaders()
-    await http.patch(`/api/videos/${id}`, { paused }, { headers })
+    await http.patch(`/videos/${id}`, { paused }, { headers })
   },
   async getLatest(videoId) {
-    const { data } = await http.get('/api/latest', { params: { video_id: videoId } })
+    const { data } = await http.get('/latest', { params: { video_id: videoId } })
     return data
   },
   async getSnapshots(videoId, hours) {
-    const { data } = await http.get('/api/snapshots', { params: { video_id: videoId, hours } })
+    const { data } = await http.get('/snapshots', { params: { video_id: videoId, hours } })
     return data
   },
   getAuthCheck,

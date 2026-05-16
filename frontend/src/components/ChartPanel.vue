@@ -37,7 +37,7 @@ const DEFAULTS = {
   coin: false, like_count: false, online_total: false, score_total: true,
 }
 
-const STORAGE_KEY = 'bili-chart-toggles'
+const STORAGE_KEY = 'chart-toggles'
 
 function loadToggles() {
   try {
@@ -195,7 +195,7 @@ function makeOpts(m) {
     cursor: {
       show: { x: true, y: false },
       drag: { x: true, y: false, setScale: false },
-      sync: { key: 'bili-charts' },
+      sync: { key: 'charts-sync' },
       points: { show: false },
       focus: { prox: 50 },
     },
@@ -305,7 +305,8 @@ watch(() => props.snapshot, s => {
     score_play: s.score_play, score_interact: s.score_interact, score_fav: s.score_fav,
     score_coin: s.score_coin, score_like: s.score_like, score_total: s.score_total,
   })
-  if (historyData.length > 2000) historyData = historyData.slice(-2000)
+  const cutoffTime = Date.now() - currentH.value * 3600 * 1000
+  historyData = historyData.filter(d => new Date(d.timestamp).getTime() >= cutoffTime)
   const se = props.scoreEnabled
   Object.entries(METRICS).forEach(([k]) => {
     if (!toggles[k] || !charts[k]) return

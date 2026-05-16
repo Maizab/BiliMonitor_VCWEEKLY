@@ -12,7 +12,7 @@ import ChartPanel from './components/ChartPanel.vue'
 import LogBar from './components/LogBar.vue'
 
 const api = useAPI()
-const { status, logLines, snapshot, connect, disconnect } = useSSE()
+const { status, logLines, snapshot, videos: sseVideos, connect, disconnect } = useSSE()
 
 const videos = ref([])
 const selectedId = ref(null)
@@ -51,6 +51,13 @@ watch(selectedId, async (id) => {
   dataLoading.value = false
 }, { immediate: false })
 
+watch(sseVideos, (list) => {
+  videos.value = list
+  if (selectedId.value && !list.find(v => v.id === selectedId.value)) {
+    selectedId.value = list.length ? list[0].id : null
+  }
+})
+
 async function fetchInitial() {
   await loadVideos()
   if (selectedId.value) {
@@ -64,7 +71,7 @@ async function loadVideos() {
   try {
     videos.value = await api.getVideos()
   } catch (e) { return }
-  const lastId = localStorage.getItem('bili-selected-video')
+  const lastId = localStorage.getItem('selected-video')
   if (!selectedId.value && videos.value.length) {
     const restored = lastId ? videos.value.find(v => v.id === Number(lastId)) : null
     selectedId.value = restored ? restored.id : videos.value[0].id
@@ -81,7 +88,7 @@ const scoreEnabled = computed(() => {
 
 function onSelectVideo(id) {
   selectedId.value = id
-  localStorage.setItem('bili-selected-video', id)
+  localStorage.setItem('selected-video', id)
 }
 async function onSettingsChange() {
   await loadVideos()
@@ -96,7 +103,6 @@ async function onSettingsChange() {
 onMounted(() => {
   connect()
   fetchInitial()
-  setInterval(loadVideos, 10000)
 })
 
 onUnmounted(() => disconnect())

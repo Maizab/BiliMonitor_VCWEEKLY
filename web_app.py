@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 from flask import Flask, Response, request, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 try:
     import tomllib
@@ -19,31 +20,130 @@ except ImportError:
     import tomli as tomllib
 
 # ============ 配置 ============
-DB_PATH = "monitor.db"
-DEFAULT_INTERVAL = 30
+CONFIG_PATH = "config.toml"
 
-# 从 config.toml 读取认证配置
-def _load_auth_config():
+_DEFAULT_CONFIG = {
+    "storage": {"db_path": "monitor.db"},
+    "auth": {"password": ""},
+    "monitor": {"interval": 30},
+    "rate_limit": {
+        "challenge_rate": 10,
+        "challenge_window": 60,
+        "verify_max_failures": 5,
+        "verify_failure_window": 300,
+        "ban_duration": 300,
+    },
+}
+
+
+def _validate_config(cfg: dict) -> dict:
+    """Deep-merge user config with defaults, fixing invalid values."""
+    merged = {}
+    for section, defaults in _DEFAULT_CONFIG.items():
+        section_cfg = cfg.get(section, {}) if isinstance(cfg.get(section), dict) else {}
+        merged[section] = {}
+        for key, default in defaults.items():
+            val = section_cfg.get(key)
+            if val is None:
+                merged[section][key] = default
+            elif type(val) is not type(default):
+                merged[section][key] = default
+            elif isinstance(default, int) and val < 1:
+                merged[section][key] = default
+            else:
+                merged[section][key] = val
+    # Special: interval must be >= 30
+    if merged["monitor"]["interval"] < 30:
+        merged["monitor"]["interval"] = 30
+    return merged
+
+
+_CONFIG_COMMENTS = {
+    "storage": {
+        "": "# 存储配置",
+        "db_path": "# SQLite 数据库文件路径",
+    },
+    "auth": {
+        "": "# 认证配置",
+        "password": "# 密码，为空则不启用认证（单用户，前端用 SHA256(challenge) 验证）",
+    },
+    "monitor": {
+        "": "# 采集配置",
+        "interval": "# 数据采集间隔（秒），最小 30",
+    },
+    "rate_limit": {
+        "": "# 限流与封禁配置",
+        "challenge_rate": "# 60 秒内最多请求 challenge 次数",
+        "challenge_window": "# challenge 限流窗口（秒）",
+        "verify_max_failures": "# 验证失败次数上限",
+        "verify_failure_window": "# 验证失败计数窗口（秒），超过上限则封禁",
+        "ban_duration": "# 封禁时长（秒）",
+    },
+}
+
+
+def _dump_toml(cfg: dict) -> str:
+    """Simple TOML serializer with comments."""
+    lines = []
+    for section, items in cfg.items():
+        comments = _CONFIG_COMMENTS.get(section, {})
+        if comments.get(""):
+            lines.append(comments[""])
+        lines.append(f"[{section}]")
+        for key, val in items.items():
+            if key in comments:
+                lines.append(comments[key])
+            if isinstance(val, str):
+                lines.append(f"{key} = {json.dumps(val)}")
+            elif isinstance(val, bool):
+                lines.append(f"{key} = {str(val).lower()}")
+            else:
+                lines.append(f"{key} = {val}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _load_config() -> dict:
+    """Load config from CONFIG_PATH, creating with defaults if needed.
+    Invalid values are reset to defaults automatically."""
     try:
-        with open("config.toml", "rb") as f:
-            cfg = tomllib.load(f)
-        return cfg.get("auth", {}).get("password", "")
-    except (FileNotFoundError, KeyError):
-        return ""
+        with open(CONFIG_PATH, "rb") as f:
+            user_cfg = tomllib.load(f)
+        need_save = False
+    except FileNotFoundError:
+        user_cfg = {}
+        need_save = True
+    merged = _validate_config(user_cfg)
+    if not need_save:
+        # Check if any value was corrected by validation
+        for section, defaults in _DEFAULT_CONFIG.items():
+            user_section = user_cfg.get(section, {}) if isinstance(user_cfg.get(section), dict) else {}
+            for key, default in defaults.items():
+                if merged[section][key] != user_section.get(key):
+                    need_save = True
+                    break
+            if need_save:
+                break
+    if need_save:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write(_dump_toml(merged))
+    return merged
 
-AUTH_PASSWORD = _load_auth_config()
+
+def _save_config(cfg: dict):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        f.write(_dump_toml(cfg))
+
+
+_config = _load_config()
+AUTH_PASSWORD = _config["auth"]["password"]
 _used_nonces: set[str] = set()
 
 # --- 限流 / IP 封禁 ---
 _challenge_window: dict[str, list[float]] = defaultdict(list)
 _verify_failures: dict[str, list[float]] = defaultdict(list)
 _banned_ips: dict[str, float] = {}
-
-CHALLENGE_RATE = 10
-CHALLENGE_WINDOW = 60
-VERIFY_MAX_FAILURES = 5
-VERIFY_FAILURE_WINDOW = 300
-BAN_DURATION = 300
+_verified_ips: dict[str, float] = {}  # IP -> last successful verify time
 
 
 def _get_client_ip() -> str:
@@ -66,12 +166,18 @@ def check_challenge_rate():
     ban = _check_ban(ip)
     if ban:
         return ban
+    # Skip rate limit for IPs that have successfully verified recently
     now = time.time()
-    _challenge_window[ip] = [t for t in _challenge_window[ip] if now - t < CHALLENGE_WINDOW]
-    if len(_challenge_window[ip]) >= CHALLENGE_RATE:
-        _banned_ips[ip] = now + BAN_DURATION
+    rl = _config["rate_limit"]
+    if ip in _verified_ips:
+        if now - _verified_ips[ip] < rl["verify_failure_window"]:
+            return None
+        del _verified_ips[ip]
+    _challenge_window[ip] = [t for t in _challenge_window[ip] if now - t < rl["challenge_window"]]
+    if len(_challenge_window[ip]) >= rl["challenge_rate"]:
+        _banned_ips[ip] = now + rl["ban_duration"]
         _challenge_window.pop(ip, None)
-        return jsonify({"error": f"请求过于频繁，已临时封禁 {BAN_DURATION} 秒"}), 429
+        return jsonify({"error": f"请求过于频繁，已临时封禁 {rl['ban_duration']} 秒"}), 429
     _challenge_window[ip].append(now)
     return None
 
@@ -79,12 +185,13 @@ def check_challenge_rate():
 def record_verify_failure() -> tuple | None:
     ip = _get_client_ip()
     now = time.time()
-    _verify_failures[ip] = [t for t in _verify_failures[ip] if now - t < VERIFY_FAILURE_WINDOW]
+    rl = _config["rate_limit"]
+    _verify_failures[ip] = [t for t in _verify_failures[ip] if now - t < rl["verify_failure_window"]]
     _verify_failures[ip].append(now)
-    if len(_verify_failures[ip]) >= VERIFY_MAX_FAILURES:
-        _banned_ips[ip] = now + BAN_DURATION
+    if len(_verify_failures[ip]) >= rl["verify_max_failures"]:
+        _banned_ips[ip] = now + rl["ban_duration"]
         _verify_failures.pop(ip, None)
-        return jsonify({"error": f"密码错误次数过多，已临时封禁 {BAN_DURATION} 秒"}), 429
+        return jsonify({"error": f"密码错误次数过多，已临时封禁 {rl['ban_duration']} 秒"}), 429
     return None
 
 
@@ -112,7 +219,7 @@ def dict_from_row(row):
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(_config["storage"]["db_path"])
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     try:
@@ -130,7 +237,7 @@ def init_db():
                 value TEXT
             )"""
         )
-        conn.execute("INSERT OR IGNORE INTO config(key, value) VALUES (?, ?)", ("interval", str(DEFAULT_INTERVAL)))
+        conn.execute("INSERT OR IGNORE INTO config(key, value) VALUES (?, ?)", ("interval", str(_config["monitor"]["interval"])))
 
         conn.execute(
             """CREATE TABLE IF NOT EXISTS videos (
@@ -449,6 +556,8 @@ _app_log.propagate = False
 
 _werkzeug_log = logging.getLogger("werkzeug")
 _werkzeug_log.addHandler(_console)
+_werkzeug_log.addHandler(_file_handler)
+_werkzeug_log.setLevel(logging.INFO)
 _werkzeug_log.propagate = False
 
 
@@ -520,7 +629,7 @@ def monitor_loop():
     while True:
         try:
             interval_str = get_config("interval")
-            interval = int(interval_str) if interval_str else DEFAULT_INTERVAL
+            interval = int(interval_str) if interval_str else _config["monitor"]["interval"]
 
             videos = list_videos()
             if not videos:
@@ -568,6 +677,7 @@ def monitor_loop():
 
 # ============ Flask ============
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=0, x_host=0, x_port=0, x_prefix=0)
 
 
 # --- 认证 ---
@@ -602,12 +712,12 @@ def check_auth():
     return None
 
 
-@app.route("/api/auth/check")
+@app.route("/auth/check")
 def api_auth_check():
     return jsonify({"protected": bool(AUTH_PASSWORD)})
 
 
-@app.route("/api/auth/challenge")
+@app.route("/auth/challenge")
 def api_auth_challenge():
     limit = check_challenge_rate()
     if limit:
@@ -618,7 +728,7 @@ def api_auth_challenge():
     })
 
 
-@app.route("/api/auth/verify", methods=["POST"])
+@app.route("/auth/verify", methods=["POST"])
 def api_auth_verify():
     if not AUTH_PASSWORD:
         return jsonify({"ok": True, "protected": False})
@@ -636,6 +746,7 @@ def api_auth_verify():
         return jsonify({"error": "缺少参数"}), 400
     if verify_challenge(str(nonce), str(timestamp), str(response)):
         clear_verify_failures()
+        _verified_ips[ip] = time.time()
         return jsonify({"ok": True, "protected": True})
     ban = record_verify_failure()
     if ban:
@@ -644,7 +755,7 @@ def api_auth_verify():
 
 
 # --- 配置 ---
-@app.route("/api/config", methods=["GET", "POST"])
+@app.route("/config", methods=["GET", "POST"])
 def api_config():
     if request.method == "POST":
         auth_err = check_auth()
@@ -653,15 +764,18 @@ def api_config():
         data = request.get_json()
         if data and "interval" in data and data["interval"]:
             val = int(data["interval"])
-            set_config("interval", str(max(30, val)))
+            val = max(30, val)
+            set_config("interval", str(val))
+            _config["monitor"]["interval"] = val
+            _save_config(_config)
         return jsonify({"ok": True})
     return jsonify({
-        "interval": int(get_config("interval") or DEFAULT_INTERVAL),
+        "interval": int(get_config("interval") or _config["monitor"]["interval"]),
     })
 
 
 # --- 视频管理 ---
-@app.route("/api/videos", methods=["GET", "POST"])
+@app.route("/videos", methods=["GET", "POST"])
 def api_videos():
     if request.method == "POST":
         auth_err = check_auth()
@@ -681,11 +795,12 @@ def api_videos():
             "last_fetch": state.last_fetch,
             "last_error": None,
         })
+        broadcast("videos", list_videos())
         return jsonify(result)
     return jsonify(list_videos())
 
 
-@app.route("/api/videos/<int:video_id>", methods=["DELETE", "PATCH"])
+@app.route("/videos/<int:video_id>", methods=["DELETE", "PATCH"])
 def api_video_detail(video_id: int):
     auth_err = check_auth()
     if auth_err:
@@ -697,6 +812,7 @@ def api_video_detail(video_id: int):
             state.running = False
             state.last_fetch = None
             state.last_error = None
+        broadcast("videos", list_videos())
         return jsonify({"ok": True})
     if request.method == "PATCH":
         data = request.get_json()
@@ -713,12 +829,13 @@ def api_video_detail(video_id: int):
                 upd["paused"] = 1 if data["paused"] else 0
             if upd:
                 update_video(video_id, **upd)
+        broadcast("videos", list_videos())
         return jsonify({"ok": True})
     return jsonify({"error": "method not allowed"}), 405
 
 
 # --- 数据 ---
-@app.route("/api/snapshots")
+@app.route("/snapshots")
 def api_snapshots():
     video_id = request.args.get("video_id", type=int)
     hours = request.args.get("hours", "24")
@@ -727,7 +844,7 @@ def api_snapshots():
     return jsonify(get_snapshots(video_id, int(hours)))
 
 
-@app.route("/api/latest")
+@app.route("/latest")
 def api_latest():
     video_id = request.args.get("video_id", type=int)
     if not video_id:
@@ -735,7 +852,7 @@ def api_latest():
     return jsonify(get_latest_snapshot(video_id))
 
 
-@app.route("/api/status")
+@app.route("/status")
 def api_status():
     has_videos = bool(list_videos())
     return jsonify({
@@ -745,12 +862,12 @@ def api_status():
     })
 
 
-@app.route("/api/log")
+@app.route("/log")
 def api_log():
     return jsonify(_log_handler.tail(100))
 
 
-@app.route("/api/stream")
+@app.route("/stream")
 def api_stream():
     def generate():
         q = queue.Queue(maxsize=50)
@@ -765,6 +882,7 @@ def api_stream():
                     "last_error": state.last_error,
                 },
                 "log": _log_handler.tail(200),
+                "videos": list_videos(),
             }, ensure_ascii=False)
             yield f"data: {payload}\n\n"
             while True:

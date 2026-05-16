@@ -36,7 +36,7 @@ async function doVerify() {
   authChecking.value = true
   try {
     await api.verifyPassword(authPassword.value)
-    sessionStorage.setItem('bili-auth-password', authPassword.value)
+    sessionStorage.setItem('auth-password', authPassword.value)
     authReady.value = true
     await loadCfg()
   } catch (e) {
@@ -52,7 +52,7 @@ watch(() => props.show, async (v) => {
     authPassword.value = ''
     authError.value = ''
 
-    const cached = sessionStorage.getItem('bili-auth-password')
+    const cached = sessionStorage.getItem('auth-password')
     if (cached) {
       authReady.value = true
     } else {
@@ -140,19 +140,18 @@ function fmtTs(ts) {
 
           <!-- Password prompt -->
           <div v-if="!authReady" class="auth-box">
-            <p class="auth-label">请输入设置密码</p>
-            <div class="auth-row">
+            <p class="auth-label">请输入密码</p>
+            <form class="auth-row" @submit.prevent="doVerify">
               <input
                 type="password"
                 v-model="authPassword"
                 placeholder="密码"
-                @keydown.enter="doVerify"
                 :disabled="authChecking"
               />
-              <button class="btn-save" :disabled="authChecking" @click="doVerify">
+              <button class="btn-save" type="submit" :disabled="authChecking">
                 {{ authChecking ? '验证中...' : '确认' }}
               </button>
-            </div>
+            </form>
             <p v-if="authError" class="auth-error">{{ authError }}</p>
           </div>
 
