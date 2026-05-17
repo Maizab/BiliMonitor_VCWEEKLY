@@ -1,3 +1,4 @@
+import time
 import requests
 
 # ============ B站 API 请求 ============
@@ -21,15 +22,30 @@ def build_session() -> requests.Session:
     return s
 
 
+def _retry_get(session: requests.Session, url: str, params: dict, timeout: int, max_retries: int = 3):
+    """带重试的 GET 请求，网络错误时最多重试 max_retries 次"""
+    last_err = None
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                time.sleep(2 + attempt)  # 递增等待：2s / 3s / 4s
+            resp = session.get(url, params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp
+        except (requests.ConnectionError, requests.Timeout, ConnectionError) as e:
+            last_err = e
+    raise last_err
+
+
 def fetch_video_detail(session: requests.Session, bvid: str) -> tuple[dict | None, str | None]:
     """获取视频基本信息（播放量、弹幕、评论等）"""
     try:
-        resp = session.get(
+        resp = _retry_get(
+            session,
             "https://api.bilibili.com/x/web-interface/view",
             params={"bvid": bvid},
             timeout=15,
         )
-        resp.raise_for_status()
         data = resp.json()
         if data["code"] != 0:
             return None, f"code={data['code']} msg={data.get('message','')}"
@@ -41,12 +57,12 @@ def fetch_video_detail(session: requests.Session, bvid: str) -> tuple[dict | Non
 def fetch_online_count(session: requests.Session, bvid: str, cid: int) -> tuple[dict | None, str | None]:
     """获取视频实时在线人数"""
     try:
-        resp = session.get(
+        resp = _retry_get(
+            session,
             "https://api.bilibili.com/x/player/online/total",
             params={"bvid": bvid, "cid": cid},
             timeout=10,
         )
-        resp.raise_for_status()
         data = resp.json()
         if data["code"] != 0:
             return None, f"code={data['code']} msg={data.get('message','')}"
