@@ -96,6 +96,24 @@ const customStart = ref(saved.customStart || new Date(Date.now() - 7 * 24 * 3600
 const customEnd = ref(saved.customEnd || new Date().toISOString())
 const customEndLive = ref(saved.customEndLive !== false)
 
+// 范围超出最早数据的提示
+const rangeNotice = computed(() => {
+  if (!historyData.length) return ''
+  const earliest = historyData[0]
+  if (!earliest) return ''
+  let rangeStartMs
+  if (customMode.value) {
+    rangeStartMs = new Date(customStart.value).getTime()
+  } else {
+    rangeStartMs = Date.now() - currentH.value * 3600 * 1000
+  }
+  const firstMs = new Date(earliest.timestamp).getTime()
+  if (rangeStartMs < firstMs) {
+    return `范围已超出最早记录的数据，最早数据点为 ${formatTs(earliest.timestamp)}`
+  }
+  return ''
+})
+
 watch(toggles, saveToggles, { deep: true })
 
 function setHours(h) {
@@ -540,6 +558,7 @@ onUnmounted(() => {
           <div :data-chart="k" class="mini-chart"></div>
         </div>
       </template>
+      <div v-if="!loading && hasData && rangeNotice" class="range-notice">{{ rangeNotice }}</div>
       <div v-if="!loading && !selectedId" class="empty">请选择一个视频开始监控</div>
       <div v-else-if="!loading && !hasData" class="empty">暂无历史数据</div>
     </div>
@@ -633,6 +652,7 @@ onUnmounted(() => {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .empty { text-align: center; padding: 40px 0; color: #aaa; font-size: 13px; }
+.range-notice { text-align: center; padding: 8px 0 4px; color: #c9a84c; font-size: 11px; }
 
 .custom-tooltip {
   position: fixed; z-index: 9999;
