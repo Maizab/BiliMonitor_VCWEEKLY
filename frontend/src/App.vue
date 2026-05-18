@@ -2,25 +2,31 @@
 import { ref, provide, onMounted, onUnmounted, watch, computed } from 'vue'
 import { useAPI, setToastFn } from './composables/useAPI.js'
 import { useSSE } from './composables/useSSE.js'
+import { useNumberFormat } from './composables/useNumberFormat.js'
 import StatusBar from './components/StatusBar.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import ManagementModal from './components/ManagementModal.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Toast from './components/Toast.vue'
 import VideoManager from './components/VideoManager.vue'
 import DataCards from './components/DataCards.vue'
 import ChartPanel from './components/ChartPanel.vue'
 import ExportModal from './components/ExportModal.vue'
-import LogBar from './components/LogBar.vue'
+
 
 const api = useAPI()
 const { status, logLines, snapshot, videos: sseVideos, connect, disconnect } = useSSE()
+const { fmt: fmtNum, mode: fmtMode } = useNumberFormat()
 
 const videos = ref([])
 const selectedId = ref(null)
 const showSettings = ref(false)
-const showLog = ref(false)
+const showManagement = ref(false)
 const showExport = ref(false)
+const exportVideoId = ref(null)
+const exportVideoTitle = ref('')
 const latestSnapshot = ref(null)
+const referenceSnapshot = ref(null)
 const dataLoading = ref(false)
 const currentHours = ref(24)
 const confirmRef = ref(null)
@@ -33,24 +39,40 @@ provide('status', status)
 provide('videos', videos)
 provide('selectedId', selectedId)
 provide('latestSnapshot', latestSnapshot)
+provide('referenceSnapshot', referenceSnapshot)
 provide('currentHours', currentHours)
 provide('confirm', confirmRef)
 provide('toast', toastRef)
 provide('pageReady', pageReady)
+provide('logLines', logLines)
+provide('fmtNum', fmtNum)
+provide('fmtMode', fmtMode)
 
 setToastFn((msg, type) => toastRef.value?.show(msg, type))
 
-watch(snapshot, s => {
+watch(snapshot, async s => {
   if (s && s.video_id === selectedId.value) {
     latestSnapshot.value = s
+    // 增量参考点只在切换视频或手动刷新时更新，SSE 推送不频繁更新
   }
 })
 
-watch(selectedId, async (id) => {
-  if (!id) { latestSnapshot.value = null; return }
+async function fetchLatestAndRef(id) {
   dataLoading.value = true
-  try { latestSnapshot.value = await api.getLatest(id) } catch (e) {}
+  try {
+    const [latest, ref] = await Promise.all([
+      api.getLatest(id),
+      api.getReference(id).catch(() => null),
+    ])
+    latestSnapshot.value = latest
+    referenceSnapshot.value = ref
+  } catch (e) {}
   dataLoading.value = false
+}
+
+watch(selectedId, async (id) => {
+  if (!id) { latestSnapshot.value = null; referenceSnapshot.value = null; return }
+  await fetchLatestAndRef(id)
 }, { immediate: false })
 
 watch(sseVideos, (list) => {
@@ -63,9 +85,15 @@ watch(sseVideos, (list) => {
 async function fetchInitial() {
   await loadVideos()
   if (selectedId.value) {
-    try { latestSnapshot.value = await api.getLatest(selectedId.value) } catch (e) {}
+    try {
+      const [latest, ref] = await Promise.all([
+        api.getLatest(selectedId.value),
+        api.getReference(selectedId.value).catch(() => null),
+      ])
+      latestSnapshot.value = latest
+      referenceSnapshot.value = ref
+    } catch (e) {}
   }
-  // Brief delay to let ChartPanel finish its initial render
   setTimeout(() => { pageReady.value = true }, 300)
 }
 
@@ -85,7 +113,6 @@ async function loadVideos() {
 
 const selectedVideo = computed(() => videos.value.find(v => v.id === selectedId.value))
 const scoreEnabled = computed(() => selectedVideo.value ? !!selectedVideo.value.score_enabled : true)
-const selectedVideoTitle = computed(() => selectedVideo.value ? (selectedVideo.value.title || selectedVideo.value.bvid) : '')
 
 function onSelectVideo(id) {
   selectedId.value = id
@@ -95,9 +122,7 @@ async function onSettingsChange() {
   await loadVideos()
   refreshKey.value++
   if (selectedId.value) {
-    dataLoading.value = true
-    try { latestSnapshot.value = await api.getLatest(selectedId.value) } catch (e) {}
-    dataLoading.value = false
+    await fetchLatestAndRef(selectedId.value)
   }
 }
 
@@ -118,13 +143,12 @@ onUnmounted(() => disconnect())
   <StatusBar
     v-if="pageReady"
     :status="status"
-    :show-log="showLog"
-    @toggle-log="showLog = !showLog"
-    @open-export="showExport = true"
     @open-settings="showSettings = true"
+    @open-management="showManagement = true"
   />
-  <SettingsModal v-if="pageReady" :show="showSettings" @close="showSettings = false" @change="onSettingsChange" />
-  <ExportModal v-if="pageReady" :show="showExport" :video-id="selectedId" :video-title="selectedVideoTitle" @close="showExport = false" />
+  <SettingsModal v-if="pageReady" :show="showSettings" @close="showSettings = false" />
+  <ManagementModal v-if="pageReady" :show="showManagement" @close="showManagement = false" @change="onSettingsChange" />
+  <ExportModal v-if="pageReady" :show="showExport" :video-id="exportVideoId" :video-title="exportVideoTitle" @close="showExport = false" />
   <main v-if="pageReady" class="app-main">
     <div class="columns">
       <aside class="sidebar">
@@ -132,8 +156,9 @@ onUnmounted(() => disconnect())
           :videos="videos"
           :selected-id="selectedId"
           @select="onSelectVideo"
+          @export="v => { exportVideoId = v.id; exportVideoTitle = v.title || v.bvid; showExport = true }"
         />
-        <DataCards :snapshot="latestSnapshot" :loading="dataLoading" :score-enabled="scoreEnabled" />
+        <DataCards :snapshot="latestSnapshot" :reference="referenceSnapshot" :loading="dataLoading" :score-enabled="scoreEnabled" />
       </aside>
       <section class="content">
         <ChartPanel
@@ -146,7 +171,6 @@ onUnmounted(() => disconnect())
         />
       </section>
     </div>
-    <LogBar :lines="logLines" :show="showLog" />
   </main>
 </template>
 
@@ -156,8 +180,8 @@ onUnmounted(() => disconnect())
   display: flex; align-items: center; justify-content: center; height: 100vh;
 }
 .page-loading .spinner {
-  width: 32px; height: 32px; border: 3px solid #e0e0e0;
-  border-top-color: #4f8ef7; border-radius: 50%;
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
   animation: spin .7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }

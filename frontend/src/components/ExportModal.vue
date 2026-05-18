@@ -104,38 +104,38 @@ async function doExport() {
   position: fixed; inset: 0; z-index: 300;
   display: flex; align-items: flex-start; justify-content: center;
   padding-top: 12vh;
-  background: rgba(0,0,0,.35); backdrop-filter: blur(3px);
+  background: var(--overlay); backdrop-filter: blur(3px);
   overflow-y: auto;
 }
 .modal-box {
-  background: #fff; border-radius: 14px; padding: 28px 32px;
+  background: var(--surface); border-radius: 14px; padding: 28px 32px;
   width: 440px; max-width: 94vw;
-  box-shadow: 0 20px 60px rgba(0,0,0,.15); position: relative;
+  box-shadow: var(--shadow-lg); position: relative;
 }
 h2 { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
 .video-name {
-  font-size: 12px; color: #888; margin-bottom: 16px;
+  font-size: 12px; color: var(--text-muted); margin-bottom: 16px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 .section { margin-bottom: 18px; }
-.section h3 { font-size: 13px; font-weight: 600; color: #555; margin-bottom: 8px; }
+.section h3 { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
 
-.err { font-size: 12px; color: #ef4444; margin-top: 2px; }
+.err { font-size: 12px; color: var(--red); margin-top: 2px; }
 
 .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px; }
 .btn-cancel {
-  border: 1px solid #e0e0e0; border-radius: 7px; padding: 8px 20px;
-  font-size: 13px; cursor: pointer; font-weight: 500; background: #fff;
-  color: #666; transition: all .15s;
+  border: 1px solid var(--border); border-radius: 7px; padding: 8px 20px;
+  font-size: 13px; cursor: pointer; font-weight: 500; background: var(--surface);
+  color: var(--text-muted); transition: all .15s;
 }
-.btn-cancel:hover { background: #f5f6f8; }
+.btn-cancel:hover { background: var(--surface-hover); }
 .btn-export {
   border: none; border-radius: 7px; padding: 8px 20px;
   font-size: 13px; cursor: pointer; font-weight: 600;
-  background: #4f8ef7; color: #fff; transition: all .15s;
+  background: var(--accent); color: #fff; transition: all .15s;
 }
-.btn-export:hover { background: #3b7de6; }
+.btn-export:hover { background: var(--accent-hover); }
 .btn-export:disabled { opacity: .6; cursor: not-allowed; }
 
 /* Transition */

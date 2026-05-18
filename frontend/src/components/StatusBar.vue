@@ -3,10 +3,9 @@ import { computed } from 'vue'
 
 const props = defineProps({
   status: Object,
-  showLog: Boolean,
 })
 
-const emit = defineEmits(['toggleLog', 'openSettings', 'openExport'])
+const emit = defineEmits(['openSettings', 'openManagement'])
 
 const dotClass = computed(() => {
   if (!props.status?.running) return 'dot red'
@@ -34,15 +33,14 @@ const msg = computed(() => {
     <h1>B站视频数据监控</h1>
     <span :class="dotClass"></span>
     <span class="status-text">{{ msg }}</span>
-    <button :class="['header-btn', { active: showLog }]" @click="emit('toggleLog')">日志</button>
-    <button class="header-btn" @click="emit('openExport')">导出</button>
+    <button class="header-btn" @click="emit('openManagement')">管理</button>
     <button class="header-btn" @click="emit('openSettings')">设置</button>
   </header>
 </template>
 
 <style scoped>
 .header {
-  background: #fff;
+  background: var(--surface);
   box-shadow: 0 1px 6px rgba(0,0,0,.05);
   padding: 0 24px;
   height: 50px;
@@ -55,22 +53,21 @@ const msg = computed(() => {
 }
 .header h1 { font-size: 17px; font-weight: 700; letter-spacing: -.3px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; transition: all .3s; }
-.dot.green { background: #22c55e; box-shadow: 0 0 8px #22c55e55; }
-.dot.red { background: #ef4444; box-shadow: 0 0 8px #ef444455; }
-.status-text { font-size: 12px; color: #888; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot.green { background: var(--green); box-shadow: 0 0 8px #22c55e55; }
+.dot.red { background: var(--red); box-shadow: 0 0 8px #ef444455; }
+.status-text { font-size: 12px; color: var(--text-muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .header-btn {
-  border: 1px solid #e0e0e0;
-  background: #fff;
+  border: 1px solid var(--border);
+  background: var(--surface);
   border-radius: 7px;
   padding: 6px 16px;
   font-size: 12px;
   cursor: pointer;
   font-weight: 500;
-  color: #555;
+  color: var(--text-secondary);
   transition: all .15s;
 }
-.header-btn:hover { background: #f5f6f8; border-color: #ccc; }
-.header-btn.active { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
+.header-btn:hover { background: var(--surface-hover); border-color: #ccc; }
 @media (max-width: 640px) {
   .header h1 { display: none; }
   .header { padding: 0 12px; gap: 8px; }

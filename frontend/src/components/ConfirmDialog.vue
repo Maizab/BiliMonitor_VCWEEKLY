@@ -39,19 +39,19 @@ defineExpose({ open })
 .modal-overlay {
   position: fixed; inset: 0; z-index: 210;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0,0,0,.35); backdrop-filter: blur(3px);
+  background: var(--overlay); backdrop-filter: blur(3px);
 }
 .modal-box {
-  background: #fff; border-radius: 14px; padding: 28px 32px; width: 380px;
-  max-width: 92vw; box-shadow: 0 20px 60px rgba(0,0,0,.15); text-align: center;
+  background: var(--surface); border-radius: 14px; padding: 28px 32px; width: 380px;
+  max-width: 92vw; box-shadow: var(--shadow-lg); text-align: center;
 }
-p { font-size: 14px; color: #333; margin-bottom: 18px; }
+p { font-size: 14px; color: var(--text); margin-bottom: 18px; }
 .actions { display: flex; gap: 10px; justify-content: center; }
 .actions button { border: none; border-radius: 7px; padding: 8px 24px; font-size: 13px; cursor: pointer; font-weight: 500; transition: all .15s; }
-.btn-primary { background: #4f8ef7; color: #fff; }
-.btn-primary:hover { background: #3b7de6; }
-.btn-cancel { background: #f0f2f5; color: #555; }
-.btn-cancel:hover { background: #e4e6ea; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-cancel { background: var(--bg); color: var(--text-secondary); }
+.btn-cancel:hover { background: var(--border); }
 
 .modal-enter-active { transition: opacity .25s; }
 .modal-leave-active { transition: opacity .2s; }

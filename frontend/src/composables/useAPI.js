@@ -89,6 +89,10 @@ const API = {
     const { data } = await http.get('/latest', { params: { video_id: videoId } })
     return data
   },
+  async getReference(videoId) {
+    const { data } = await http.get('/reference', { params: { video_id: videoId } })
+    return data
+  },
   async getSnapshots(videoId, hours, start, end) {
     const params = { video_id: videoId }
     if (start && end) { params.start = start; params.end = end }

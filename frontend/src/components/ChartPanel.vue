@@ -14,6 +14,8 @@ const props = defineProps({
 const emit = defineEmits(['update:hours'])
 
 const api = inject('api')
+const fmtNum = inject('fmtNum', n => n != null ? Number(n).toLocaleString() : '-')
+const fmtMode = inject('fmtMode', null)
 
 const METRICS = {
   view_count:   { label: '播放', color: '#1890ff' },
@@ -23,19 +25,27 @@ const METRICS = {
   coin:         { label: '硬币', color: '#eb2f96' },
   like_count:   { label: '点赞', color: '#fa541c' },
   online_total: { label: '正在观看', color: '#52c41a' },
-  score_total:  { label: '得点', color: '#4f8ef7' },
+  score_total:  { label: '积累得点', color: '#4f8ef7' },
+  incr_score_total: { label: '增量得点', color: '#14b8a6' },
 }
 
-// Filtered entries for template v-for (excludes score_total when disabled)
+// 增量得点是否有数据（非 computed，手动同步）
+const hasIncr = ref(false)
+function updateHasIncr() {
+  hasIncr.value = historyData.length > 0 && historyData.some(d => d.incr_score_total != null)
+}
+
+// Filtered entries for template v-for（开关按钮始终可见）
 const visibleMetrics = computed(() => {
-  const entries = Object.entries(METRICS)
-  if (props.scoreEnabled) return entries
-  return entries.filter(([k]) => k !== 'score_total')
+  let entries = Object.entries(METRICS)
+  if (!props.scoreEnabled) entries = entries.filter(([k]) => k !== 'score_total' && k !== 'incr_score_total')
+  return entries
 })
 
 const DEFAULTS = {
   view_count: true, danmaku: false, reply: false, favorite: false,
-  coin: false, like_count: false, online_total: false, score_total: true,
+  coin: false, like_count: false, online_total: false,
+  score_total: true, incr_score_total: false,
 }
 
 const STORAGE_KEY = 'chart-toggles'
@@ -108,7 +118,8 @@ const rangeNotice = computed(() => {
     rangeStartMs = Date.now() - currentH.value * 3600 * 1000
   }
   const firstMs = new Date(earliest.timestamp).getTime()
-  if (rangeStartMs < firstMs) {
+  // 给 2 分钟容差，避免范围起点与最早数据点过近时误报
+  if (rangeStartMs + 120000 < firstMs) {
     return `范围已超出最早记录的数据，最早数据点为 ${formatTs(earliest.timestamp)}`
   }
   return ''
@@ -153,10 +164,11 @@ function formatTs(ts) {
 function smoothSeries(data, key, window = 3) {
   const half = Math.floor(window / 2)
   return data.map((r, i) => {
+    if (r[key] == null) return null  // 原值为 NULL 则保持 NULL，不平滑跨过
     let sum = 0, count = 0
     for (let j = Math.max(0, i - half); j < Math.min(data.length, i + half + 1); j++) {
       const v = Number(data[j][key])
-      if (!isNaN(v)) { sum += v; count++ }
+      if (!isNaN(v) && data[j][key] != null) { sum += v; count++ }
     }
     return count > 0 ? sum / count : null
   })
@@ -184,6 +196,7 @@ function lttb(data, targetCount) {
 
     for (let j = bucketStart; j < bucketEnd && j < dataLen - 1; j++) {
       const pb = data[j]
+      if (pb[1] == null || pa[1] == null || nextBucketPt[1] == null) continue
       const area = Math.abs(
         (pa[0] - nextBucketPt[0]) * (pb[1] - pa[1]) -
         (pa[0] - pb[0]) * (nextBucketPt[1] - pa[1])
@@ -241,7 +254,7 @@ function buildData(data, key) {
 
 function valFormatter(v) {
   if (v == null) return '-'
-  return v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(1)+'k' : v.toFixed(0)
+  return fmtNum(v)
 }
 
 // 预计算时间戳数组，供二分查找复用
@@ -284,7 +297,7 @@ function updateTooltip(u) {
     .map(([k, m]) => ({
       color: m.color,
       label: m.label,
-      value: closest[k] != null ? Number(closest[k]).toLocaleString() : '-',
+      value: closest[k] != null ? fmtNum(closest[k]) : '-',
     }))
 
   const rect = u.root.getBoundingClientRect()
@@ -376,6 +389,7 @@ async function loadHistory() {
   destroyAll()
   historyData = []
   hasData.value = false
+  hasIncr.value = false
   try {
     let data
     if (customMode.value) {
@@ -387,6 +401,7 @@ async function loadHistory() {
     }
     historyData = data
     hasData.value = data.length > 0
+    updateHasIncr()
     rebuildTimestamps()
     renderAll()
   } finally {
@@ -405,7 +420,9 @@ function renderAll() {
   nextTick(() => {
     requestAnimationFrame(() => {
       const se = props.scoreEnabled
-      const visibleKeys = Object.keys(METRICS).filter(k => toggles[k] && (k !== 'score_total' || se))
+      const visibleKeys = Object.keys(METRICS).filter(k =>
+        toggles[k] && (k !== 'score_total' || se) && (k !== 'incr_score_total' || se) && (k !== 'incr_score_total' || hasIncr.value)
+      )
       visibleKeys.forEach((k, idx) => {
         const el = containerRef.value?.querySelector(`[data-chart="${k}"]`)
         if (!el) return
@@ -434,6 +451,13 @@ watch(() => props.snapshot, s => {
     online_total: s.online_total,
     score_play: s.score_play, score_interact: s.score_interact, score_fav: s.score_fav,
     score_coin: s.score_coin, score_like: s.score_like, score_total: s.score_total,
+    incr_view_count: s.incr_view_count, incr_danmaku: s.incr_danmaku,
+    incr_reply: s.incr_reply, incr_favorite: s.incr_favorite,
+    incr_coin: s.incr_coin, incr_like_count: s.incr_like_count,
+    incr_share: s.incr_share,
+    incr_score_play: s.incr_score_play, incr_score_interact: s.incr_score_interact,
+    incr_score_fav: s.incr_score_fav, incr_score_coin: s.incr_score_coin,
+    incr_score_like: s.incr_score_like, incr_score_total: s.incr_score_total,
   })
 
   let cutoffTime
@@ -444,6 +468,7 @@ watch(() => props.snapshot, s => {
   }
   historyData = historyData.filter(d => new Date(d.timestamp).getTime() >= cutoffTime)
   hasData.value = historyData.length > 0
+  updateHasIncr()
   rebuildTimestamps()
   const se = props.scoreEnabled
   Object.entries(METRICS).forEach(([k]) => {
@@ -469,6 +494,12 @@ watch(() => props.scoreEnabled, () => {
 watch(() => props.refreshKey, () => {
   if (props.selectedId) loadHistory()
 })
+
+if (fmtMode) {
+  watch(fmtMode, () => {
+    if (historyData.length) renderAll()
+  })
+}
 
 function onResize() {
   requestAnimationFrame(() => {
@@ -550,7 +581,7 @@ onUnmounted(() => {
     <div class="charts-scroll" ref="containerRef">
       <div v-if="loading" class="overlay-spinner"><span class="spinner"></span></div>
       <template v-for="[k, m] in visibleMetrics" :key="k">
-        <div v-show="toggles[k] && hasData" class="chart-row">
+        <div v-show="toggles[k] && hasData && (k !== 'incr_score_total' || hasIncr)" class="chart-row">
           <div class="row-label">
             <span class="row-dot" :style="{ background: m.color }"></span>
             {{ m.label }}
@@ -558,6 +589,9 @@ onUnmounted(() => {
           <div :data-chart="k" class="mini-chart"></div>
         </div>
       </template>
+      <div v-if="!loading && hasData && scoreEnabled && toggles.incr_score_total && !hasIncr" class="incr-hint-row">
+        <span class="incr-hint-text">未记录到所选时间范围内上周六 03:00 附近的数据，增量得点不可用</span>
+      </div>
       <div v-if="!loading && hasData && rangeNotice" class="range-notice">{{ rangeNotice }}</div>
       <div v-if="!loading && !selectedId" class="empty">请选择一个视频开始监控</div>
       <div v-else-if="!loading && !hasData" class="empty">暂无历史数据</div>
@@ -579,62 +613,62 @@ onUnmounted(() => {
 
 <style scoped>
 .chart-panel {
-  background: #fff; border-radius: 10px; padding: 14px 18px;
-  box-shadow: 0 1px 4px rgba(0,0,0,.04); display: flex; flex-direction: column;
+  background: var(--surface); border-radius: 10px; padding: 14px 18px;
+  box-shadow: var(--shadow); display: flex; flex-direction: column;
   -webkit-tap-highlight-color: transparent;
 }
 .toolbar { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
-.tool-label { font-size: 12px; font-weight: 600; color: #555; }
+.tool-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 
 /* Custom range */
 .custom-range {
-  background: #f8fafc; border: 1px solid #e8e8e8; border-radius: 8px;
-  padding: 10px 12px; margin-bottom: 8px;
+  background: var(--surface-secondary); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
 }
 .custom-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .custom-field { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 160px; max-width: 260px; }
-.custom-label { font-size: 12px; font-weight: 600; color: #555; white-space: nowrap; flex-shrink: 0; }
-.custom-live-label { font-size: 13px; color: #4f8ef7; font-weight: 500; padding: 8px 0; }
+.custom-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0; }
+.custom-live-label { font-size: 13px; color: var(--accent); font-weight: 500; padding: 8px 0; }
 .custom-toggle { flex-shrink: 0; }
 .live-toggle {
-  border: 1px solid #e0e0e0; background: #fff; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--surface); border-radius: 5px;
   padding: 4px 13px; font-size: 12px; cursor: pointer; font-weight: 500;
-  color: #888; transition: all .15s; white-space: nowrap;
+  color: var(--text-muted); transition: all .15s; white-space: nowrap;
   -webkit-tap-highlight-color: transparent; outline: none; line-height: 1.5;
 }
-.live-toggle:hover { border-color: #4f8ef7; color: #4f8ef7; }
-.live-toggle.live { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
+.live-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.live-toggle.live { background: var(--accent); color: #fff; border-color: var(--accent); }
 .range-btn {
-  border: 1px solid #e0e0e0; background: #fff; border-radius: 5px; padding: 4px 13px;
-  font-size: 12px; cursor: pointer; font-weight: 500; color: #666; transition: all .15s;
+  border: 1px solid var(--border); background: var(--surface); border-radius: 5px; padding: 4px 13px;
+  font-size: 12px; cursor: pointer; font-weight: 500; color: var(--text-muted); transition: all .15s;
   -webkit-tap-highlight-color: transparent; outline: none; line-height: 1.5;
 }
-.range-btn:hover { border-color: #4f8ef7; color: #4f8ef7; }
-.range-btn.active { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
+.range-btn:hover { border-color: var(--accent); color: var(--accent); }
+.range-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .range-btn:focus { outline: none; }
-.sep { width: 1px; height: 15px; background: #e8e8e8; margin: 0 5px; }
+.sep { width: 1px; height: 15px; background: var(--border); margin: 0 5px; }
 .tool-group { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .metric-toggle {
   font-size: 12px; display: flex; align-items: center; gap: 4px;
-  cursor: pointer; user-select: none; color: #666;
+  cursor: pointer; user-select: none; color: var(--text-muted);
   -webkit-tap-highlight-color: transparent; outline: none;
 }
 .metric-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
 .check-box {
-  width: 14px; height: 14px; border: 1.5px solid #d0d0d0; border-radius: 3px;
+  width: 14px; height: 14px; border: 1.5px solid var(--border); border-radius: 3px;
   transition: all .15s; flex-shrink: 0; position: relative;
 }
-.metric-toggle input:checked + .check-box { background: #4f8ef7; border-color: #4f8ef7; }
+.metric-toggle input:checked + .check-box { background: var(--accent); border-color: var(--accent); }
 .metric-toggle input:checked + .check-box::after {
   content: ''; position: absolute; left: 3px; top: 1px; width: 5px; height: 8px;
   border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-left: 2px; }
-.charts-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; position: relative; -webkit-tap-highlight-color: transparent; }
+.charts-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 120px; position: relative; -webkit-tap-highlight-color: transparent; }
 .chart-row { display: flex; align-items: stretch; margin-bottom: 2px; -webkit-tap-highlight-color: transparent; }
 .row-label {
   width: 64px; flex-shrink: 0; display: flex; align-items: center; gap: 4px;
-  font-size: 11px; color: #666; padding: 4px 0; white-space: nowrap;
+  font-size: 11px; color: var(--text-muted); padding: 4px 0; white-space: nowrap;
 }
 .row-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .mini-chart { flex: 1; height: 100px; -webkit-tap-highlight-color: transparent; }
@@ -642,30 +676,33 @@ onUnmounted(() => {
 .overlay-spinner {
   position: absolute; inset: 0; z-index: 10;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(255,255,255,.7);
-  backdrop-filter: blur(1px);
 }
 .spinner {
-  width: 28px; height: 28px; border: 3px solid #e0e0e0;
-  border-top-color: #4f8ef7; border-radius: 50%;
+  width: 28px; height: 28px; border: 3px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%;
   animation: spin .7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.empty { text-align: center; padding: 40px 0; color: #aaa; font-size: 13px; }
+.empty { text-align: center; padding: 40px 0; color: var(--text-placeholder); font-size: 13px; }
 .range-notice { text-align: center; padding: 8px 0 4px; color: #c9a84c; font-size: 11px; }
+.incr-hint-row {
+  display: flex; align-items: center; justify-content: center;
+  height: 90px; color: var(--text-placeholder); font-size: 11px;
+}
+.incr-hint-text { text-align: center; }
 
 .custom-tooltip {
   position: fixed; z-index: 9999;
-  background: #fff; border-radius: 8px; padding: 10px 14px;
-  box-shadow: 0 4px 24px rgba(0,0,0,.12); border: 1px solid #e8e8e8;
+  background: var(--surface); border-radius: 8px; padding: 10px 14px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.12); border: 1px solid var(--border);
   min-width: 160px; max-width: 220px; pointer-events: none; user-select: none;
   white-space: nowrap;
 }
-.tt-time { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid #f0f0f0; }
+.tt-time { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border-light); }
 .tt-row { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; font-size: 12px; }
 .tt-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-.tt-label { color: #888; min-width: 52px; }
-.tt-value { color: #333; font-weight: 500; }
+.tt-label { color: var(--text-muted); min-width: 52px; }
+.tt-value { color: var(--text); font-weight: 500; }
 .tt-fade-enter-active { transition: opacity .12s; }
 .tt-fade-leave-active { transition: opacity .1s; }
 .tt-fade-enter-from, .tt-fade-leave-to { opacity: 0; }
