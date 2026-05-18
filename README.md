@@ -5,9 +5,10 @@
 ## 功能
 
 - **实时数据采集** — 定时拉取 Bilibili API，记录播放量、弹幕、评论、收藏、硬币、分享、点赞、正在观看人数
-- **得点计算** — 基于[中V周刊得点算法](https://github.com/YUNSHIYANG/Points_Calculator_for_VCWEEKLY)计算播放、互动、收藏、硬币、点赞五项得分及最终总分
-- **可视化图表** — uPlot 渲染多条指标曲线，支持平滑、降采样、同步光标、自定义显示项
-- **多视频管理** — 添加/删除/暂停监控、按视频切换图表、可独立开关得点计算
+- **得点计算** — 基于[中V周刊得点算法](https://github.com/YUNSHIYANG/Points_Calculator_for_VCWEEKLY)计算播放、互动、收藏、硬币、点赞五项得分及最终总分；支持以周六凌晨3点数据为参考点的增量得分
+- **可视化图表** — uPlot 渲染多条指标曲线，支持平滑、降采样、同步光标、自定义显示项和日期范围
+- **多视频管理** — 添加/删除/暂停/恢复监控、按视频切换图表、可独立开关得点计算
+- **数据导出** — Excel 导出历史快照数据，支持自定义时间范围
 - **实时推送** — SSE (Server-Sent Events) 推送最新数据和日志，无需轮询
 - **简单认证** — 基于 SHA256 challenge-response 的密码保护，支持限流和 IP 封禁
 - **响应式布局** — 适配桌面和移动端
@@ -20,6 +21,7 @@
 | 前端 | Vue 3 (Composition API), Vite, uPlot |
 | 实时通信 | Server-Sent Events (SSE) |
 | 认证 | SHA256 challenge-response |
+| 导出 | openpyxl |
 
 ## 快速开始
 
@@ -47,6 +49,11 @@ password = ""
 [monitor]
 interval = 30
 
+# 得点计算配置
+[score]
+# 增量得点参考点（周六凌晨3点）查询容差窗口（分钟）
+increment_window = 10
+
 # 限流与封禁
 [rate_limit]
 challenge_rate = 10
@@ -54,13 +61,15 @@ challenge_window = 60
 verify_max_failures = 5
 verify_failure_window = 300
 ban_duration = 300
+export_rate = 5
+export_window = 60
 ```
 
 ### 3. 启动
 
 ```bash
 # 后端（默认 http://0.0.0.0:5000）
-python web_app.py
+python app.py
 
 # 前端开发模式（默认 http://localhost:5173，自动代理 /api 到后端）
 cd frontend && npm run dev
@@ -86,34 +95,45 @@ location /video_monitor/api {
 
 ### 5. 使用
 
-1. 打开前端页面，点击右上角「设置」
+1. 打开前端页面，点击右上角「管理」添加视频
 2. 输入 B站视频 BV 号添加监控
 3. 选择视频即可查看实时数据卡片和历史趋势图
+4. 点击视频条目上的导出按钮可导出历史数据为 Excel 文件
 
 ## 项目结构
 
 ```
 视频数据监控/
-├── web_app.py              # 后端主程序（API + 采集 + SSE）
-├── config.toml             # 配置文件（自动生成）
-├── requirements.txt        # Python 依赖
-├── monitor.db              # SQLite 数据文件（自动生成）
-├── logs/                   # 日志目录
+├── app.py                   # Flask 应用入口
+├── routes.py                # API 路由（认证、视频管理、数据查询、导出、SSE）
+├── monitor.py               # 后台采集循环、日志与 SSE 广播
+├── database.py              # SQLite 数据库（表结构、CRUD、得点计算）
+├── bilibili.py              # B站 API 请求封装（含重试机制）
+├── config.py                # TOML 配置加载、校验与持久化
+├── ratelimit.py             # 认证和导出限流与封禁
+├── utils.py                 # 时间工具函数与得点算法
+├── config.toml              # 配置文件（自动生成）
+├── requirements.txt         # Python 依赖
+├── monitor.db               # SQLite 数据文件（自动生成）
+├── logs/                    # 日志目录
 └── frontend/
     ├── src/
-    │   ├── App.vue         # 根组件
+    │   ├── App.vue          # 根组件
     │   ├── components/
-    │   │   ├── ChartPanel.vue    # 图表面板（uPlot）
-    │   │   ├── DataCards.vue     # 实时数据卡片
-    │   │   ├── VideoManager.vue  # 视频列表
-    │   │   ├── SettingsModal.vue # 设置弹窗
-    │   │   ├── StatusBar.vue     # 顶部状态栏
-    │   │   ├── LogBar.vue        # 日志面板
-    │   │   ├── ConfirmDialog.vue # 确认对话框
-    │   │   └── Toast.vue         # 消息提示
+    │   │   ├── ChartPanel.vue        # 图表面板（uPlot）
+    │   │   ├── DataCards.vue         # 实时数据卡片与增量得分
+    │   │   ├── VideoManager.vue      # 视频列表
+    │   │   ├── SettingsModal.vue     # 设置弹窗
+    │   │   ├── ManagementModal.vue   # 视频管理弹窗
+    │   │   ├── ExportModal.vue       # 数据导出弹窗
+    │   │   ├── DateTimePicker.vue    # 日期范围选择器
+    │   │   ├── StatusBar.vue         # 顶部状态栏
+    │   │   ├── ConfirmDialog.vue     # 确认对话框
+    │   │   └── Toast.vue             # 消息提示
     │   └── composables/
-    │       ├── useAPI.js   # API 请求封装
-    │       └── useSSE.js   # SSE 实时推送
+    │       ├── useAPI.js       # API 请求封装
+    │       ├── useSSE.js       # SSE 实时推送
+    │       └── useNumberFormat.js  # 数值格式化
     ├── vite.config.js
     └── package.json
 ```
@@ -128,10 +148,12 @@ location /video_monitor/api {
 | GET/POST | `/config` | 读取/修改配置 | POST 需要 |
 | GET/POST | `/videos` | 列出/添加视频 | POST 需要 |
 | PATCH/DELETE | `/videos/<id>` | 更新/删除视频 | 是 |
-| GET | `/snapshots` | 获取历史数据 `?video_id=&hours=` | 否 |
+| GET | `/snapshots` | 获取历史数据 `?video_id=&hours=&start=&end=` | 否 |
 | GET | `/latest` | 获取最新快照 `?video_id=` | 否 |
+| GET | `/reference` | 获取增量得点参考快照 `?video_id=` | 否 |
 | GET | `/status` | 获取采集状态 | 否 |
 | GET | `/log` | 获取最近日志 | 否 |
+| GET | `/export` | 导出 Excel 数据 `?video_id=&start=&end=&tz=` | 否 |
 | GET | `/stream` | SSE 实时推送 | 否 |
 
 ## 关于
