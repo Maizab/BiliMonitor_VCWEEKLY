@@ -82,7 +82,6 @@ def init_db():
                 incr_coin         INTEGER,
                 incr_like_count   INTEGER,
                 incr_share        INTEGER,
-                incr_online_total TEXT,
                 incr_score_play      REAL,
                 incr_score_interact  REAL,
                 incr_score_fav       REAL,
@@ -271,7 +270,7 @@ def get_snapshots(video_id: int, hours: int = None, start: str = None, end: str 
                       score_play, score_interact, score_fav, score_coin,
                       score_like, score_total,
                       incr_view_count, incr_danmaku, incr_reply, incr_favorite,
-                      incr_coin, incr_like_count, incr_share, incr_online_total,
+                      incr_coin, incr_like_count, incr_share,
                       incr_score_play, incr_score_interact, incr_score_fav,
                       incr_score_coin, incr_score_like, incr_score_total
                FROM snapshots
