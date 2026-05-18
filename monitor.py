@@ -8,7 +8,8 @@ from collections import deque
 from datetime import datetime
 
 from config import _config
-from database import get_config, list_videos, update_video, calculate_score, get_db, _ts_to_iso
+from utils import calculate_score, _ts_to_iso
+from database import get_config, list_videos, update_video, _get_saturday_ref_raw, get_db
 from bilibili import build_session, fetch_video_detail, fetch_online_count
 
 # ============ 监控状态 ============
@@ -120,16 +121,51 @@ def collect_video(session, video: dict, now: str):
     else:
         scores = {k: None for k in ["score_play", "score_interact", "score_fav", "score_coin", "score_like", "score_total"]}
 
+    # 增量得点计算：用增量原始数据重新算分，而非总分相减
+    ref = _get_saturday_ref_raw(vid)
+    if ref:
+        incr_view = view - (ref.get("view_count") or 0)
+        incr_danmaku = danmaku - (ref.get("danmaku") or 0)
+        incr_reply = reply - (ref.get("reply") or 0)
+        incr_favorite = favorite - (ref.get("favorite") or 0)
+        incr_coin = coin - (ref.get("coin") or 0)
+        incr_like = like - (ref.get("like_count") or 0)
+        incr_share = share - (ref.get("share") or 0)
+        if score_enabled:
+            incr_scores_raw = calculate_score(incr_view, incr_like, incr_danmaku, incr_reply, incr_coin, incr_favorite)
+            incr_scores = {
+                "incr_score_play": incr_scores_raw["score_play"],
+                "incr_score_interact": incr_scores_raw["score_interact"],
+                "incr_score_fav": incr_scores_raw["score_fav"],
+                "incr_score_coin": incr_scores_raw["score_coin"],
+                "incr_score_like": incr_scores_raw["score_like"],
+                "incr_score_total": incr_scores_raw["score_total"],
+            }
+        else:
+            incr_scores = {k: None for k in ["incr_score_play", "incr_score_interact", "incr_score_fav", "incr_score_coin", "incr_score_like", "incr_score_total"]}
+    else:
+        incr_view = incr_danmaku = incr_reply = incr_favorite = incr_coin = incr_like = incr_share = None
+        incr_scores = {k: None for k in ["incr_score_play", "incr_score_interact", "incr_score_fav", "incr_score_coin", "incr_score_like", "incr_score_total"]}
+
     with get_db() as conn:
         conn.execute(
             """INSERT INTO snapshots
                (video_id, timestamp, view_count, danmaku, reply, favorite,
                 coin, share, like_count, online_total,
-                score_play, score_interact, score_fav, score_coin, score_like, score_total)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                score_play, score_interact, score_fav, score_coin, score_like, score_total,
+                incr_view_count, incr_danmaku, incr_reply, incr_favorite,
+                incr_coin, incr_like_count, incr_share,
+                incr_score_play, incr_score_interact, incr_score_fav,
+                incr_score_coin, incr_score_like, incr_score_total)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?, ?,
+                       ?, ?, ?, ?, ?, ?)""",
             (vid, now, view, danmaku, reply, favorite, coin, share, like,
              online.get("total") if online else None,
-             *scores.values()),
+             *scores.values(),
+             incr_view, incr_danmaku, incr_reply, incr_favorite,
+             incr_coin, incr_like, incr_share,
+             *incr_scores.values()),
         )
         conn.commit()
 
@@ -142,6 +178,15 @@ def collect_video(session, video: dict, now: str):
         "score_play": scores["score_play"], "score_interact": scores["score_interact"],
         "score_fav": scores["score_fav"], "score_coin": scores["score_coin"],
         "score_like": scores["score_like"], "score_total": scores["score_total"],
+        "incr_view_count": incr_view, "incr_danmaku": incr_danmaku, "incr_reply": incr_reply,
+        "incr_favorite": incr_favorite, "incr_coin": incr_coin,
+        "incr_like_count": incr_like, "incr_share": incr_share,
+        "incr_score_play": incr_scores["incr_score_play"],
+        "incr_score_interact": incr_scores["incr_score_interact"],
+        "incr_score_fav": incr_scores["incr_score_fav"],
+        "incr_score_coin": incr_scores["incr_score_coin"],
+        "incr_score_like": incr_scores["incr_score_like"],
+        "incr_score_total": incr_scores["incr_score_total"],
     })
 
     return True, None

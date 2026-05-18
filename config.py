@@ -12,6 +12,7 @@ _DEFAULT_CONFIG = {
     "storage": {"db_path": "monitor.db"},
     "auth": {"password": ""},
     "monitor": {"interval": 30},
+    "score": {"increment_window": 10},  # 周六凌晨3点参考点的容差窗口（分钟）
     "rate_limit": {
         "challenge_rate": 10,
         "challenge_window": 60,
@@ -58,6 +59,10 @@ _CONFIG_COMMENTS = {
     "monitor": {
         "": "# 采集配置",
         "interval": "# 数据采集间隔（秒），最小 30",
+    },
+    "score": {
+        "": "# 得点计算配置",
+        "increment_window": "# 增量得点参考点（周六凌晨3点）查询容差窗口（分钟）",
     },
     "rate_limit": {
         "": "# 限流与封禁配置",

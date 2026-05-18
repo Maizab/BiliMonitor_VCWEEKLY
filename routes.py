@@ -10,11 +10,12 @@ from urllib.parse import quote
 from flask import Response, request, jsonify
 
 from config import _config, AUTH_PASSWORD, _save_config
+from utils import _ts_to_iso, _normalize_ts
 from database import (
     dict_from_row, get_db, get_config, set_config,
     list_videos, add_video, delete_video, update_video,
     clear_scores, recalc_scores, get_latest_snapshot, get_snapshots,
-    _normalize_ts, _ts_to_iso,
+    get_saturday_ref,
 )
 from ratelimit import (
     check_challenge_rate, record_verify_failure, clear_verify_failures,
@@ -195,6 +196,14 @@ def register_routes(app):
             return jsonify(None)
         return jsonify(get_latest_snapshot(video_id))
 
+    @app.route("/reference")
+    def api_reference():
+        """增量得点参考点：最近一个周六凌晨3点UTC附近的数据"""
+        video_id = request.args.get("video_id", type=int)
+        if not video_id:
+            return jsonify(None)
+        return jsonify(get_saturday_ref(video_id))
+
     @app.route("/status")
     def api_status():
         has_videos = bool(list_videos())
@@ -248,7 +257,11 @@ def register_routes(app):
                     """SELECT timestamp, view_count, danmaku, reply, favorite,
                               coin, share, like_count, online_total,
                               score_play, score_interact, score_fav, score_coin,
-                              score_like, score_total
+                              score_like, score_total,
+                              incr_view_count, incr_danmaku, incr_reply, incr_favorite,
+                              incr_coin, incr_like_count, incr_share,
+                              incr_score_play, incr_score_interact, incr_score_fav,
+                              incr_score_coin, incr_score_like, incr_score_total
                        FROM snapshots
                        WHERE video_id=? AND timestamp >= ? AND timestamp <= ?
                        ORDER BY timestamp ASC""",
@@ -259,7 +272,11 @@ def register_routes(app):
                     """SELECT timestamp, view_count, danmaku, reply, favorite,
                               coin, share, like_count, online_total,
                               score_play, score_interact, score_fav, score_coin,
-                              score_like, score_total
+                              score_like, score_total,
+                              incr_view_count, incr_danmaku, incr_reply, incr_favorite,
+                              incr_coin, incr_like_count, incr_share,
+                              incr_score_play, incr_score_interact, incr_score_fav,
+                              incr_score_coin, incr_score_like, incr_score_total
                        FROM snapshots
                        WHERE video_id=? AND timestamp >= ?
                        ORDER BY timestamp ASC""",
@@ -270,7 +287,11 @@ def register_routes(app):
                     """SELECT timestamp, view_count, danmaku, reply, favorite,
                               coin, share, like_count, online_total,
                               score_play, score_interact, score_fav, score_coin,
-                              score_like, score_total
+                              score_like, score_total,
+                              incr_view_count, incr_danmaku, incr_reply, incr_favorite,
+                              incr_coin, incr_like_count, incr_share,
+                              incr_score_play, incr_score_interact, incr_score_fav,
+                              incr_score_coin, incr_score_like, incr_score_total
                        FROM snapshots
                        WHERE video_id=? AND timestamp <= ?
                        ORDER BY timestamp ASC""",
@@ -281,7 +302,11 @@ def register_routes(app):
                     """SELECT timestamp, view_count, danmaku, reply, favorite,
                               coin, share, like_count, online_total,
                               score_play, score_interact, score_fav, score_coin,
-                              score_like, score_total
+                              score_like, score_total,
+                              incr_view_count, incr_danmaku, incr_reply, incr_favorite,
+                              incr_coin, incr_like_count, incr_share,
+                              incr_score_play, incr_score_interact, incr_score_fav,
+                              incr_score_coin, incr_score_like, incr_score_total
                        FROM snapshots
                        WHERE video_id=?
                        ORDER BY timestamp ASC""",
