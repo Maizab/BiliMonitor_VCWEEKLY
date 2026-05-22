@@ -1,6 +1,7 @@
 import hashlib
 import json
 import queue
+import re
 import secrets
 import time
 from datetime import datetime, timedelta
@@ -25,6 +26,9 @@ from monitor import state, broadcast, _subscribers, _log_handler
 
 # 已使用的 nonce 集合（防重放攻击）
 _used_nonces: set[str] = set()
+
+# BVID 格式: BV + 10位 base58 (不含 0, O, I, l)
+BVID_RE = re.compile(r'^BV[1-9A-HJ-NP-Za-km-z]{10}$')
 
 
 def register_routes(app):
@@ -131,6 +135,8 @@ def register_routes(app):
             if not data or not data.get("bvid"):
                 return jsonify({"error": "缺少 bvid"}), 400
             bvid = data["bvid"].strip()
+            if not BVID_RE.match(bvid):
+                return jsonify({"error": "无效的 BV 号格式"}), 400
             result = add_video(bvid)
             if result is None:
                 return jsonify({"error": "已存在或无效"}), 409
