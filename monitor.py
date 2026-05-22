@@ -104,6 +104,7 @@ def collect_video(session, video: dict, now: str):
     if vid not in state.video_cid:
         state.video_cid[vid] = detail["cid"]
         update_video(vid, title=detail["title"])
+        broadcast("videos", list_videos())
 
     # 在线人数
     online, _ = fetch_online_count(session, bvid, state.video_cid[vid])
