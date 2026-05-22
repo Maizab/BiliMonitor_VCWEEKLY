@@ -25,7 +25,7 @@ const authError = ref('')
 const authChecking = ref(false)
 
 // Video management
-const videos = ref([])
+const videos = inject('videos')
 const newBvid = ref('')
 
 watch(logLines, () => {
@@ -125,9 +125,15 @@ async function saveInterval() {
   } catch (e) { saving.value = false }
 }
 
+const BVID_RE = /^BV[1-9A-HJ-NP-Za-km-z]{10}$/
+
 async function addVideo() {
   const bvid = newBvid.value.trim()
   if (!bvid) return
+  if (!BVID_RE.test(bvid)) {
+    toastRef?.value?.show('无效的 BV 号格式', 'error')
+    return
+  }
   try {
     await api.addVideo(bvid)
     newBvid.value = ''

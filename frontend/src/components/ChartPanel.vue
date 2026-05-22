@@ -107,10 +107,18 @@ const customEnd = ref(saved.customEnd || new Date().toISOString())
 const customEndLive = ref(saved.customEndLive !== false)
 
 // 范围超出最早数据的提示
-const rangeNotice = computed(() => {
-  if (!historyData.length) return ''
+const rangeNotice = ref('')
+
+function updateRangeNotice() {
+  if (!historyData.length) {
+    rangeNotice.value = ''
+    return
+  }
   const earliest = historyData[0]
-  if (!earliest) return ''
+  if (!earliest) {
+    rangeNotice.value = ''
+    return
+  }
   let rangeStartMs
   if (customMode.value) {
     rangeStartMs = new Date(customStart.value).getTime()
@@ -120,10 +128,11 @@ const rangeNotice = computed(() => {
   const firstMs = new Date(earliest.timestamp).getTime()
   // 给 2 分钟容差，避免范围起点与最早数据点过近时误报
   if (rangeStartMs + 120000 < firstMs) {
-    return `范围已超出最早记录的数据，最早数据点为 ${formatTs(earliest.timestamp)}`
+    rangeNotice.value = `范围已超出最早记录的数据，最早数据点为 ${formatTs(earliest.timestamp)}`
+  } else {
+    rangeNotice.value = ''
   }
-  return ''
-})
+}
 
 watch(toggles, saveToggles, { deep: true })
 
@@ -388,6 +397,7 @@ async function loadHistory() {
   loading.value = true
   destroyAll()
   historyData = []
+  updateRangeNotice()
   hasData.value = false
   hasIncr.value = false
   try {
@@ -400,6 +410,7 @@ async function loadHistory() {
       data = await api.getSnapshots(props.selectedId, currentH.value)
     }
     historyData = data
+    updateRangeNotice()
     hasData.value = data.length > 0
     updateHasIncr()
     rebuildTimestamps()
@@ -467,6 +478,7 @@ watch(() => props.snapshot, s => {
     cutoffTime = Date.now() - currentH.value * 3600 * 1000
   }
   historyData = historyData.filter(d => new Date(d.timestamp).getTime() >= cutoffTime)
+  updateRangeNotice()
   hasData.value = historyData.length > 0
   updateHasIncr()
   rebuildTimestamps()
