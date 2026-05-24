@@ -100,10 +100,11 @@ def collect_video(session, video: dict, now: str):
 
     stat = detail["stat"]
 
-    # 缓存 cid，首次更新标题
+    # 缓存 cid，首次更新标题和发布时间
     if vid not in state.video_cid:
         state.video_cid[vid] = detail["cid"]
-        update_video(vid, title=detail["title"])
+        pubdate = detail.get("pubdate", 0) or 0
+        update_video(vid, title=detail["title"], pubdate=pubdate)
         broadcast("videos", list_videos())
 
     # 在线人数
