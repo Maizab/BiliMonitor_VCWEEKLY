@@ -55,6 +55,11 @@ def init_db():
             conn.execute("ALTER TABLE videos ADD COLUMN paused INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        # 迁移：旧版本数据库补充 pubdate 列
+        try:
+            conn.execute("ALTER TABLE videos ADD COLUMN pubdate INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
         conn.execute(
             """CREATE TABLE IF NOT EXISTS snapshots (
@@ -307,6 +312,16 @@ def _get_saturday_ref_raw(video_id: int) -> dict | None:
             (video_id, t_start, t_end),
         ).fetchall()
         if not rows:
+            # 若视频在参考时间之后发布，则以全零作为基准，增量=积累
+            video = conn.execute("SELECT pubdate FROM videos WHERE id=?", (video_id,)).fetchone()
+            if video and video["pubdate"] and video["pubdate"] > 0:
+                pubdate_dt = datetime.utcfromtimestamp(video["pubdate"])
+                if pubdate_dt > target:
+                    return {
+                        "timestamp": target.strftime("%Y-%m-%d %H:%M:%S"),
+                        "view_count": 0, "danmaku": 0, "reply": 0,
+                        "favorite": 0, "coin": 0, "like_count": 0, "share": 0,
+                    }
             return None
 
         best = None
