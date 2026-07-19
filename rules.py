@@ -11,7 +11,10 @@ from database import get_rules_for_group
 
 
 def evaluate_condition(value_json: dict, snapshot: dict | None) -> bool:
-    """评估 Type 2 条件：检查快照中的指标值是否落在指定区间内。"""
+    """评估 Type 2 条件：检查快照中的指标值是否落在指定闭区间 [min, max] 内。
+
+    min_value / max_value 为 None 表示该侧无界。两者不能同时为 None。
+    """
     if snapshot is None:
         return False
 
@@ -28,19 +31,23 @@ def evaluate_condition(value_json: dict, snapshot: dict | None) -> bool:
     min_val = value_json.get("min_value")
     max_val = value_json.get("max_value")
 
+    # At least one bound required
+    if min_val is None and max_val is None:
+        return False
+
     if min_val is not None:
         try:
             if actual < float(min_val):
                 return False
         except (ValueError, TypeError):
-            pass
+            return False
 
     if max_val is not None:
         try:
             if actual > float(max_val):
                 return False
         except (ValueError, TypeError):
-            pass
+            return False
 
     return True
 
