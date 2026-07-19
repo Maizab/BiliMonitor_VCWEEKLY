@@ -39,7 +39,6 @@ const selectedGroup = ref(null)
 
 // New group inline input
 const newGroupName = ref('')
-const addingGroup = ref(false)
 
 // Rename inline
 const renamingGroupId = ref(null)
@@ -195,7 +194,7 @@ watch(() => props.show, async (v) => {
     authError.value = ''
     selectedGroupId.value = null; selectedGroup.value = null
     ruleEditShow.value = false; editingRule.value = null
-    newGroupName.value = ''; addingGroup.value = false
+    newGroupName.value = ''
     renamingGroupId.value = null; renameText.value = ''
 
     const cached = sessionStorage.getItem('auth-password')
@@ -316,7 +315,6 @@ async function doCreateGroup() {
   try {
     await api.createRuleGroup(name)
     newGroupName.value = ''
-    addingGroup.value = false
     await refreshGroups()
     toastRef?.value?.show('规则组已创建', 'success')
   } catch (e) { /* ignore */ }
@@ -598,13 +596,9 @@ function isDefaultGroup(g) {
                     </div>
                     <!-- 新建组 -->
                     <div class="panel-footer">
-                      <template v-if="addingGroup">
-                        <input class="new-group-input" v-model="newGroupName" placeholder="组名称"
-                          @keydown.enter="doCreateGroup" @keydown.escape="addingGroup = false" autofocus />
-                        <button class="btn-save-sm" @click="doCreateGroup">确定</button>
-                        <button class="btn-cancel-sm" @click="addingGroup = false; newGroupName = ''">取消</button>
-                      </template>
-                      <button v-else class="btn-add-block" @click="addingGroup = true">+ 新建规则组</button>
+                      <input class="new-group-input" v-model="newGroupName" placeholder="规则组名称"
+                        @keydown.enter="doCreateGroup" />
+                      <button class="btn-save-sm" @click="doCreateGroup">添加</button>
                     </div>
                   </div>
 
@@ -740,7 +734,7 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .panel-header { padding: 10px 12px; border-bottom: 1px solid var(--border-light); }
 .panel-title { font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .panel-body { flex: 1; overflow-y: auto; padding: 4px; }
-.panel-footer { padding: 6px; border-top: 1px solid var(--border-light); }
+.panel-footer { padding: 6px; border-top: 1px solid var(--border-light); display: flex; gap: 4px; }
 
 .group-item {
   display: flex; align-items: center; justify-content: space-between;
@@ -754,7 +748,8 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .group-actions { display: flex; gap: 1px; flex-shrink: 0; margin-left: 4px; }
 .rename-input { width: 100%; border: 1px solid var(--accent); border-radius: 4px; padding: 3px 6px; font-size: 12px; outline: none; }
 
-.new-group-input { width: calc(100% - 80px); border: 1px solid var(--accent); border-radius: 4px; padding: 5px 8px; font-size: 12px; outline: none; margin-right: 4px; }
+.new-group-input { width: 110px; border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; font-size: 12px; outline: none; background: var(--surface); color: var(--text); }
+.new-group-input:focus { border-color: var(--accent); }
 
 .btn-icon {
   border: none; background: none; cursor: pointer; font-size: 12px;
@@ -763,13 +758,6 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .btn-icon:hover { background: var(--surface-hover); color: var(--text); }
 .btn-icon:disabled { opacity: .3; cursor: not-allowed; }
 .btn-icon.btn-danger:hover { color: var(--red); background: #fef2f2; }
-
-.btn-add-block {
-  width: 100%; border: 1px dashed var(--border); border-radius: 6px; padding: 6px;
-  font-size: 12px; cursor: pointer; background: none; color: var(--accent);
-  transition: all .12s;
-}
-.btn-add-block:hover { border-color: var(--accent); background: var(--accent-light); }
 
 /* Detail panel */
 .detail-panel { flex: 1; min-width: 0; }
@@ -857,19 +845,15 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .btn-save:hover { background: var(--accent-hover); }
 .btn-save:disabled { opacity: .6; }
 .btn-save-sm {
-  border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px;
+  border: none; border-radius: 5px; padding: 5px 12px; font-size: 12px;
   cursor: pointer; font-weight: 500; background: var(--accent); color: #fff;
+  flex-shrink: 0;
 }
 .btn-cancel {
   border: 1px solid var(--border); border-radius: 5px; padding: 5px 14px;
   font-size: 12px; cursor: pointer; background: var(--surface); color: var(--text-muted); transition: all .12s;
 }
 .btn-cancel:hover { background: var(--surface-hover); }
-.btn-cancel-sm {
-  border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; font-size: 11px;
-  cursor: pointer; background: var(--surface); color: var(--text-muted);
-}
-
 /* Log */
 .log-section { margin-top: 4px; }
 .log-box {
