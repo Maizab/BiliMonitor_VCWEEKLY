@@ -1,7 +1,7 @@
 <script setup>
 import { ref, inject, watch, nextTick, computed } from 'vue'
 import Dropdown from './Dropdown.vue'
-import TimePicker from './TimePicker.vue'
+import RuleEditModal from './RuleEditModal.vue'
 
 const props = defineProps({ show: Boolean })
 const emit = defineEmits(['close', 'change'])
@@ -45,17 +45,9 @@ const addingGroup = ref(false)
 const renamingGroupId = ref(null)
 const renameText = ref('')
 
-// Rule editor
-const showRuleForm = ref(false)
-const editingRule = ref(null)
-const ruleType = ref(1)
-const ruleInterval = ref(60)
-const ruleCondMetric = ref('view_count')
-const ruleCondMin = ref(null)
-const ruleCondMax = ref(null)
-const ruleCondInterval = ref(30)
-const ruleTime = ref('03:00')
-const ruleDow = ref(5)  // 0=Mon...6=Sun, default Saturday for Type 4
+// Rule edit modal
+const ruleEditShow = ref(false)
+const editingRule = ref(null)  // raw rule from API, or null for add
 
 const RULE_TYPE_LABELS = { 1: '定长', 2: '条件精确', 3: '每天某点', 4: '每周定点' }
 const WEEKDAY_NAMES = ['日', '一', '二', '三', '四', '五', '六']
@@ -202,7 +194,7 @@ watch(() => props.show, async (v) => {
     authPassword.value = ''
     authError.value = ''
     selectedGroupId.value = null; selectedGroup.value = null
-    cancelRuleEdit()
+    ruleEditShow.value = false; editingRule.value = null
     newGroupName.value = ''; addingGroup.value = false
     renamingGroupId.value = null; renameText.value = ''
 
@@ -305,13 +297,17 @@ function fmtTs(ts) {
 // Only for video table dropdown: map groups to {value, label}
 const groupOptions = () => ruleGroups.value.map(g => ({ value: g.id, label: g.name }))
 
+const detailLoading = ref(false)
+
 // ---- Rule group management ----
 async function selectGroup(id) {
   selectedGroupId.value = id
+  closeRuleEdit()
+  detailLoading.value = true
   try {
     selectedGroup.value = await api.getRuleGroup(id)
   } catch (e) { selectedGroup.value = null }
-  cancelRuleEdit()
+  detailLoading.value = false
 }
 
 async function doCreateGroup() {
@@ -368,99 +364,102 @@ async function deleteGroup(g) {
 }
 
 async function refreshGroups() {
-  ruleGroups.value = await api.getRuleGroups()
-  videos.value = await api.getVideos()
+  const [groups, vids] = await Promise.all([
+    api.getRuleGroups(),
+    api.getVideos(),
+  ])
+  ruleGroups.value = groups
+  videos.value = vids
 }
 
 // ---- Rule editor ----
+const ruleEditForm = computed(() => {
+  // Build the form data for RuleEditModal from the stored rule
+  if (!editingRule.value) return null
+  const r = editingRule.value
+  try {
+    const v = typeof r.value === 'string' ? JSON.parse(r.value) : r.value
+    if (r.rule_type === 1) return { rule_type: 1, interval: v.interval || 60 }
+    if (r.rule_type === 2) return {
+      rule_type: 2, metric: v.metric || 'view_count',
+      min_value: v.min_value ?? null, max_value: v.max_value ?? null,
+      target_interval: v.target_interval || 30,
+    }
+    if (r.rule_type === 3) return { rule_type: 3, time: toLocalTime(v.time || '00:00') }
+    if (r.rule_type === 4) {
+      const l = toLocalDowTime(v.day_of_week ?? 4, v.time || '19:00')
+      return { rule_type: 4, day_of_week: l.day_of_week, time: l.time }
+    }
+  } catch (e) { /* ignore */ }
+  return { rule_type: 1, interval: 60 }
+})
+
 function startAddRule() {
   editingRule.value = null
-  ruleType.value = 1
-  ruleInterval.value = 60
-  ruleCondMetric.value = 'view_count'
-  ruleCondMin.value = null
-  ruleCondMax.value = null
-  ruleCondInterval.value = 30
-  ruleTime.value = '03:00'
-  ruleDow.value = 5
-  showRuleForm.value = true
+  ruleEditShow.value = true
 }
 
 function startEditRule(rule) {
   editingRule.value = rule
-  ruleType.value = rule.rule_type
-  try {
-    const v = typeof rule.value === 'string' ? JSON.parse(rule.value) : rule.value
-    if (rule.rule_type === 1) {
-      ruleInterval.value = v.interval || 60
-    } else if (rule.rule_type === 2) {
-      ruleCondMetric.value = v.metric || 'view_count'
-      ruleCondMin.value = v.min_value ?? null
-      ruleCondMax.value = v.max_value ?? null
-      ruleCondInterval.value = v.target_interval || 30
-    } else if (rule.rule_type === 3) {
-      ruleTime.value = toLocalTime(v.time || '00:00')
-    } else if (rule.rule_type === 4) {
-      const l = toLocalDowTime(v.day_of_week ?? 4, v.time || '19:00')
-      ruleDow.value = l.day_of_week
-      ruleTime.value = l.time
-    }
-  } catch (e) {
-    ruleInterval.value = 60
-  }
-  showRuleForm.value = true
+  ruleEditShow.value = true
 }
 
-function cancelRuleEdit() {
-  showRuleForm.value = false
+async function onRuleSaved({ type, value }) {
+  // Convert time values from local to UTC
+  let finalValue = value
+  if (type === 3) {
+    finalValue = { time: toUtcTime(value.time) }
+  } else if (type === 4) {
+    const u = toUtcDowTime(value.day_of_week, value.time)
+    finalValue = { day_of_week: u.day_of_week, time: u.time }
+  }
+
+  const isEdit = !!editingRule.value
+  const editRuleId = editingRule.value?.id
+  const gid = selectedGroupId.value
+
+  // Close modal immediately
+  ruleEditShow.value = false
   editingRule.value = null
-}
-
-async function saveRule() {
-  let value = {}
-  if (ruleType.value === 1) {
-    value = { interval: Math.max(30, ruleInterval.value) }
-  } else if (ruleType.value === 2) {
-    const minVal = ruleCondMin.value !== null && ruleCondMin.value !== '' ? Number(ruleCondMin.value) : null
-    const maxVal = ruleCondMax.value !== null && ruleCondMax.value !== '' ? Number(ruleCondMax.value) : null
-    value = {
-      metric: ruleCondMetric.value,
-      min_value: minVal,
-      max_value: maxVal,
-      target_interval: Math.max(30, ruleCondInterval.value),
-    }
-  } else if (ruleType.value === 3) {
-    value = { time: toUtcTime(ruleTime.value) }
-  } else if (ruleType.value === 4) {
-    const u = toUtcDowTime(ruleDow.value, ruleTime.value)
-    value = { day_of_week: u.day_of_week, time: u.time }
-  }
 
   try {
-    if (editingRule.value) {
-      await api.updateRule(editingRule.value.id, ruleType.value, value)
+    if (isEdit) {
+      await api.updateRule(editRuleId, type, finalValue)
     } else {
-      await api.addRule(selectedGroupId.value, ruleType.value, value)
+      await api.addRule(gid, type, finalValue)
     }
-    selectedGroup.value = await api.getRuleGroup(selectedGroupId.value)
-    await refreshGroups()
-    cancelRuleEdit()
+    const [group] = await Promise.all([
+      api.getRuleGroup(gid),
+      refreshGroups(),
+    ])
+    selectedGroup.value = group
     emit('change')
     toastRef?.value?.show('规则已保存', 'success')
   } catch (e) { /* ignore */ }
+}
+
+function closeRuleEdit() {
+  ruleEditShow.value = false
+  editingRule.value = null
 }
 
 async function deleteRuleById(ruleId) {
   if (!confirmRef?.value) return
   const ok = await confirmRef.value.open('确认删除该规则？', '确认删除')
   if (!ok) return
+  if (selectedGroup.value?.rules) {
+    selectedGroup.value.rules = selectedGroup.value.rules.filter(r => r.id !== ruleId)
+  }
   try {
     await api.deleteRule(ruleId)
-    selectedGroup.value = await api.getRuleGroup(selectedGroupId.value)
     await refreshGroups()
     emit('change')
     toastRef?.value?.show('规则已删除', 'success')
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    if (selectedGroupId.value) {
+      selectedGroup.value = await api.getRuleGroup(selectedGroupId.value)
+    }
+  }
 }
 
 function ruleSummary(rule) {
@@ -468,11 +467,9 @@ function ruleSummary(rule) {
     const v = typeof rule.value === 'string' ? JSON.parse(rule.value) : rule.value
     if (rule.rule_type === 1) return `每 ${v.interval}s`
     if (rule.rule_type === 2) {
-      const parts = []
-      if (v.min_value != null) parts.push(`≥ ${v.min_value}`)
-      if (v.max_value != null) parts.push(`≤ ${v.max_value}`)
-      parts.push(`→ ${v.target_interval}s`)
-      return `${v.metric} ${parts.join(' ')}`
+      const lo = v.min_value != null ? v.min_value : ''
+      const hi = v.max_value != null ? v.max_value : ''
+      return `${v.metric} [${lo}, ${hi}] → ${v.target_interval}s`
     }
     if (rule.rule_type === 3) return `每天 ${toLocalTime(v.time)} (${tzLabel})`
     if (rule.rule_type === 4) {
@@ -613,62 +610,12 @@ function isDefaultGroup(g) {
 
                   <!-- 右侧：组详情 -->
                   <div class="detail-panel">
-                    <template v-if="selectedGroup">
+                    <Transition name="detail-fade" mode="out-in">
+                      <div v-if="detailLoading" key="loading" class="detail-loading"><span class="spinner"></span></div>
+                      <div v-else-if="selectedGroup" :key="selectedGroupId" class="detail-inner">
                       <div class="detail-header">
                         <h3>{{ selectedGroup.name }} — 规则列表</h3>
-                        <button v-if="!showRuleForm" class="btn-add-sm" @click="startAddRule">+ 添加规则</button>
-                      </div>
-
-                      <!-- 规则编辑表单 -->
-                      <div v-if="showRuleForm" class="rule-form">
-                        <div class="form-row">
-                          <label>类型</label>
-                          <Dropdown :options="RULE_TYPE_OPTIONS" v-model="ruleType" />
-                        </div>
-
-                        <!-- Type 1 -->
-                        <div v-if="ruleType === 1" class="form-row">
-                          <label>间隔</label>
-                          <input type="number" v-model.number="ruleInterval" min="30" />
-                          <span class="unit">秒</span>
-                        </div>
-
-                        <!-- Type 2: 条件精确 -->
-                        <template v-if="ruleType === 2">
-                          <div class="form-row">
-                            <label>指标</label>
-                            <Dropdown :options="METRIC_OPTIONS" v-model="ruleCondMetric" />
-                          </div>
-                          <div class="form-row">
-                            <label>区间</label>
-                            <input type="number" v-model.number="ruleCondMin" placeholder="最小值（可选）" class="range-input" />
-                            <span class="range-sep">~</span>
-                            <input type="number" v-model.number="ruleCondMax" placeholder="最大值（可选）" class="range-input" />
-                          </div>
-                          <div class="form-row">
-                            <label>步长</label>
-                            <input type="number" v-model.number="ruleCondInterval" min="30" />
-                            <span class="unit">秒（条件成立时）</span>
-                          </div>
-                        </template>
-
-                        <!-- Type 3 / 4 -->
-                        <div v-if="ruleType === 3" class="form-row">
-                          <label>时间</label>
-                          <TimePicker v-model="ruleTime" />
-                          <span class="tz-hint">{{ tzLabel }}</span>
-                        </div>
-                        <div v-if="ruleType === 4" class="form-row">
-                          <label>时间</label>
-                          <Dropdown :options="DOW_OPTIONS" v-model="ruleDow" style="min-width:70px" />
-                          <TimePicker v-model="ruleTime" />
-                          <span class="tz-hint">{{ tzLabel }}</span>
-                        </div>
-
-                        <div class="form-actions">
-                          <button class="btn-save" @click="saveRule">{{ editingRule ? '更新' : '添加' }}</button>
-                          <button class="btn-cancel" @click="cancelRuleEdit">取消</button>
-                        </div>
+                        <button class="btn-add-sm" @click="startAddRule">+ 添加规则</button>
                       </div>
 
                       <!-- 规则列表 -->
@@ -685,13 +632,25 @@ function isDefaultGroup(g) {
                           </div>
                         </div>
                       </div>
-                    </template>
-                    <div v-else class="empty-hint detail-empty">← 选择一个规则组查看详情</div>
+                    </div>
+                    <div v-else key="empty" class="empty-hint detail-empty">← 选择一个规则组查看详情</div>
+                    </Transition>
                   </div>
                 </div>
               </template>
             </template>
           </template>
+
+          <!-- 规则编辑弹窗 -->
+          <RuleEditModal
+            :show="ruleEditShow"
+            :rule="ruleEditForm"
+            :ruleTypeOptions="RULE_TYPE_OPTIONS"
+            :metricOptions="METRIC_OPTIONS"
+            :dowOptions="DOW_OPTIONS"
+            @close="closeRuleEdit"
+            @save="onRuleSaved"
+          />
 
           <!-- 日志 -->
           <section class="section log-section">
@@ -852,6 +811,14 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 
 .empty-hint { text-align: center; color: var(--text-placeholder); font-size: 12px; padding: 16px 0; }
 .detail-empty { padding: 60px 0 !important; }
+
+.detail-loading { display: flex; align-items: center; justify-content: center; padding: 60px 0; }
+.detail-loading .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+
+.detail-inner { min-height: 260px; }
+.detail-fade-enter-active { transition: opacity .12s ease; }
+.detail-fade-leave-active { transition: opacity .08s ease; }
+.detail-fade-enter-from, .detail-fade-leave-to { opacity: 0; }
 .empty-videos { text-align: center; padding: 24px 0; color: var(--text-placeholder); font-size: 13px; }
 
 /* Buttons */
