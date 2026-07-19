@@ -85,6 +85,45 @@ const API = {
     const headers = await getAuthHeaders()
     await http.patch(`/videos/${id}`, { paused }, { headers })
   },
+  async assignVideoRule(id, ruleGroupId) {
+    const headers = await getAuthHeaders()
+    await http.patch(`/videos/${id}`, { rule_group_id: ruleGroupId }, { headers })
+  },
+  // Rule Groups
+  async getRuleGroups() {
+    const { data } = await http.get('/rule_groups')
+    return data
+  },
+  async createRuleGroup(name) {
+    const headers = await getAuthHeaders()
+    const { data } = await http.post('/rule_groups', { name }, { headers })
+    return data
+  },
+  async getRuleGroup(id) {
+    const { data } = await http.get(`/rule_groups/${id}`)
+    return data
+  },
+  async updateRuleGroup(id, name) {
+    const headers = await getAuthHeaders()
+    await http.put(`/rule_groups/${id}`, { name }, { headers })
+  },
+  async deleteRuleGroup(id) {
+    const headers = await getAuthHeaders()
+    await http.delete(`/rule_groups/${id}`, { headers })
+  },
+  async addRule(groupId, type, value) {
+    const headers = await getAuthHeaders()
+    const { data } = await http.post(`/rule_groups/${groupId}/rules`, { type, value }, { headers })
+    return data
+  },
+  async updateRule(ruleId, type, value) {
+    const headers = await getAuthHeaders()
+    await http.put(`/rules/${ruleId}`, { type, value }, { headers })
+  },
+  async deleteRule(ruleId) {
+    const headers = await getAuthHeaders()
+    await http.delete(`/rules/${ruleId}`, { headers })
+  },
   async getLatest(videoId) {
     const { data } = await http.get('/latest', { params: { video_id: videoId } })
     return data

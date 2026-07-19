@@ -7,9 +7,9 @@ import time
 from collections import deque
 from datetime import datetime
 
-from config import _config
 from utils import calculate_score, _ts_to_iso
-from database import get_config, list_videos, update_video, _get_saturday_ref_raw, get_db
+from database import list_videos, update_video, _get_saturday_ref_raw, get_db, get_latest_snapshot
+from rules import compute_next_collect
 from bilibili import build_session, fetch_video_detail, fetch_online_count
 
 # ============ 监控状态 ============
@@ -19,6 +19,7 @@ class MonitorState:
         self.last_fetch: str | None = None
         self.last_error: str | None = None
         self.video_cid: dict[int, int] = {}  # video_id -> cid
+        self.next_collect_times: dict[int, float] = {}  # video_id -> epoch
 
 
 state = MonitorState()
@@ -195,17 +196,15 @@ def collect_video(session, video: dict, now: str):
 
 
 def monitor_loop():
-    """后台监控循环，定时采集所有活跃视频的数据"""
+    """后台监控循环，根据每个视频的规则组动态调度采集"""
     session = None
 
     while True:
         try:
-            interval_str = get_config("interval")
-            interval = int(interval_str) if interval_str else _config["monitor"]["interval"]
-
             videos = list_videos()
             if not videos:
                 state.running = False
+                state.next_collect_times.clear()
                 time.sleep(10)
                 session = None
                 continue
@@ -215,25 +214,50 @@ def monitor_loop():
             if session is None:
                 session = build_session()
 
-            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-
-            errors = []
             active = [v for v in videos if not v.get("paused")]
-            for i, video in enumerate(active):
-                if i > 0:
-                    time.sleep(1.5)  # 错开请求，避免触发 API 限流
-                try:
-                    ok, err = collect_video(session, video, now)
-                    if not ok:
-                        errors.append(err)
-                        _app_log.warning("FAIL %s: %s", video['bvid'], err)
-                    else:
-                        _app_log.info("OK   %s", video['bvid'])
-                except Exception as e:
-                    errors.append(f"{now}: [{video['bvid']}] {e}")
-                    _app_log.error("ERR  %s: %s", video['bvid'], e)
+            now_epoch = time.time()
+            now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-            state.last_fetch = now
+            # 初始化新视频的 next_collect（首次立即采集）
+            for v in active:
+                vid = v["id"]
+                if vid not in state.next_collect_times:
+                    state.next_collect_times[vid] = now_epoch
+
+            # 筛选到期视频
+            due = [v for v in active if state.next_collect_times.get(v["id"], now_epoch) <= now_epoch]
+
+            # 采集到期视频
+            errors = []
+            if due:
+                for i, video in enumerate(due):
+                    if i > 0:
+                        time.sleep(1.5)  # 错开请求，避免触发 API 限流
+                    collect_start = time.time()
+                    try:
+                        ok, err = collect_video(session, video, now_str)
+                        if not ok:
+                            errors.append(err)
+                            _app_log.warning("FAIL %s: %s", video['bvid'], err)
+                        else:
+                            _app_log.info("OK   %s", video['bvid'])
+                    except Exception as e:
+                        errors.append(f"{now_str}: [{video['bvid']}] {e}")
+                        _app_log.error("ERR  %s: %s", video['bvid'], e)
+
+                    # 采集后重新计算下次采集时间
+                    last_snap = get_latest_snapshot(video["id"])
+                    state.next_collect_times[video["id"]] = compute_next_collect(
+                        video, collect_start, last_snap
+                    )
+
+            # 清理已删除视频的条目
+            active_ids = {v["id"] for v in active}
+            for vid in list(state.next_collect_times.keys()):
+                if vid not in active_ids:
+                    del state.next_collect_times[vid]
+
+            state.last_fetch = now_str
             state.last_error = "; ".join(errors) if errors else None
             broadcast("status", {
                 "running": state.running,
@@ -241,7 +265,19 @@ def monitor_loop():
                 "last_error": state.last_error,
             })
 
+            # 动态计算 sleep：取所有活跃视频的最短下次采集时间
+            future = [
+                t for vid, t in state.next_collect_times.items()
+                if vid in active_ids and t > time.time()
+            ]
+            if future:
+                sleep_sec = max(1, min(future) - time.time())
+            else:
+                sleep_sec = 30  # 所有视频刚采集完
+            sleep_sec = min(sleep_sec, 300)  # 上限 5 分钟，确保及时响应配置变更
+
         except Exception as e:
             state.last_error = f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}: {e}"
+            sleep_sec = 30
 
-        time.sleep(interval)
+        time.sleep(sleep_sec)

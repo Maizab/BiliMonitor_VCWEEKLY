@@ -41,13 +41,34 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO config(key, value) VALUES (?, ?)", ("interval", str(_config["monitor"]["interval"])))
 
         conn.execute(
+            """CREATE TABLE IF NOT EXISTS rule_groups (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS rules (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id   INTEGER NOT NULL REFERENCES rule_groups(id) ON DELETE CASCADE,
+                rule_type  INTEGER NOT NULL,
+                value      TEXT NOT NULL,
+                position   INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )"""
+        )
+
+        conn.execute(
             """CREATE TABLE IF NOT EXISTS videos (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 bvid          TEXT NOT NULL UNIQUE,
                 title         TEXT,
                 score_enabled INTEGER DEFAULT 1,
                 paused        INTEGER DEFAULT 0,
-                added_at      TEXT NOT NULL
+                added_at      TEXT NOT NULL,
+                pubdate       INTEGER DEFAULT 0,
+                rule_group_id INTEGER NOT NULL REFERENCES rule_groups(id)
             )"""
         )
         # 迁移：旧版本数据库补充 paused 列
@@ -97,6 +118,21 @@ def init_db():
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_snap_ts ON snapshots(timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_snap_vid ON snapshots(video_id)")
+
+        # 种子数据：若规则组表为空，创建默认规则组 + 默认定长规则
+        row = conn.execute("SELECT COUNT(*) FROM rule_groups").fetchone()
+        if row[0] == 0:
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "INSERT INTO rule_groups (name, created_at, updated_at) VALUES (?, ?, ?)",
+                ("默认", now, now),
+            )
+            gid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                "INSERT INTO rules (group_id, rule_type, value, position, created_at) VALUES (?, ?, ?, ?, ?)",
+                (gid, 1, '{"interval": 60}', 0, now),
+            )
+
         conn.commit()
 
 
@@ -113,14 +149,124 @@ def set_config(key: str, value: str):
         conn.commit()
 
 
+# ============ 规则组管理 ============
+def get_default_group_id() -> int:
+    """返回默认规则组的 id（id 最小的规则组）"""
+    with get_db() as conn:
+        row = conn.execute("SELECT id FROM rule_groups ORDER BY id LIMIT 1").fetchone()
+        return row["id"] if row else 1
+
+
+def list_rule_groups() -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT g.*, COUNT(r.id) AS rules_count
+               FROM rule_groups g
+               LEFT JOIN rules r ON r.group_id = g.id
+               GROUP BY g.id
+               ORDER BY g.id"""
+        ).fetchall()
+        return [dict_from_row(r) for r in rows]
+
+
+def get_rule_group(group_id: int) -> dict | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM rule_groups WHERE id=?", (group_id,)).fetchone()
+        if not row:
+            return None
+        group = dict_from_row(row)
+        rules = conn.execute(
+            "SELECT * FROM rules WHERE group_id=? ORDER BY position", (group_id,)
+        ).fetchall()
+        group["rules"] = [dict_from_row(r) for r in rules]
+        return group
+
+
+def create_rule_group(name: str) -> dict:
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO rule_groups (name, created_at, updated_at) VALUES (?, ?, ?)",
+            (name, now, now),
+        )
+        conn.commit()
+        gid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return get_rule_group(gid)
+
+
+def update_rule_group(group_id: int, name: str):
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE rule_groups SET name=?, updated_at=? WHERE id=?",
+            (name, now, group_id),
+        )
+        conn.commit()
+
+
+def delete_rule_group(group_id: int):
+    """删除规则组，关联视频移到默认组。不允许删除默认组。"""
+    default_id = get_default_group_id()
+    if group_id == default_id:
+        raise ValueError("不能删除默认规则组")
+    with get_db() as conn:
+        conn.execute("UPDATE videos SET rule_group_id=? WHERE rule_group_id=?", (default_id, group_id))
+        conn.execute("DELETE FROM rules WHERE group_id=?", (group_id,))
+        conn.execute("DELETE FROM rule_groups WHERE id=?", (group_id,))
+        conn.commit()
+
+
+def get_rules_for_group(group_id: int) -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM rules WHERE group_id=? ORDER BY position", (group_id,)
+        ).fetchall()
+        return [dict_from_row(r) for r in rows]
+
+
+def add_rule(group_id: int, rule_type: int, value: str) -> dict:
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        # 新规则的 position = 当前组内最大 position + 1
+        max_pos = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) AS mp FROM rules WHERE group_id=?",
+            (group_id,),
+        ).fetchone()["mp"]
+        conn.execute(
+            "INSERT INTO rules (group_id, rule_type, value, position, created_at) VALUES (?, ?, ?, ?, ?)",
+            (group_id, rule_type, value, max_pos + 1, now),
+        )
+        conn.commit()
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        row = conn.execute("SELECT * FROM rules WHERE id=?", (rid,)).fetchone()
+        return dict_from_row(row)
+
+
+def update_rule(rule_id: int, rule_type: int, value: str):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE rules SET rule_type=?, value=? WHERE id=?",
+            (rule_type, value, rule_id),
+        )
+        conn.commit()
+
+
+def delete_rule(rule_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM rules WHERE id=?", (rule_id,))
+        conn.commit()
+
+
 # ============ 视频管理 ============
 def list_videos() -> list[dict]:
     with get_db() as conn:
         rows = conn.execute(
             """SELECT v.*,
+                      g.name AS rule_group_name,
                       COUNT(s.id) as snapshot_count,
                       MAX(s.timestamp) as last_snapshot_at
                FROM videos v
+               LEFT JOIN rule_groups g ON g.id = v.rule_group_id
                LEFT JOIN snapshots s ON s.video_id = v.id
                GROUP BY v.id
                ORDER BY v.id"""
@@ -137,9 +283,10 @@ def list_videos() -> list[dict]:
 def add_video(bvid: str, title: str = "") -> dict | None:
     with get_db() as conn:
         try:
+            default_gid = get_default_group_id()
             conn.execute(
-                "INSERT INTO videos (bvid, title, added_at) VALUES (?, ?, ?)",
-                (bvid, title, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")),
+                "INSERT INTO videos (bvid, title, added_at, rule_group_id) VALUES (?, ?, ?, ?)",
+                (bvid, title, datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), default_gid),
             )
             conn.commit()
             row = conn.execute("SELECT * FROM videos WHERE bvid=?", (bvid,)).fetchone()

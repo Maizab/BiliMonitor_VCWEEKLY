@@ -17,6 +17,9 @@ from database import (
     list_videos, add_video, delete_video, update_video,
     clear_scores, recalc_scores, get_latest_snapshot, get_snapshots,
     get_saturday_ref,
+    get_default_group_id, list_rule_groups, get_rule_group,
+    create_rule_group, update_rule_group, delete_rule_group,
+    add_rule, update_rule, delete_rule,
 )
 from ratelimit import (
     check_challenge_rate, record_verify_failure, clear_verify_failures,
@@ -124,6 +127,92 @@ def register_routes(app):
             "interval": int(get_config("interval") or _config["monitor"]["interval"]),
         })
 
+    # ============ 规则组管理 ============
+    @app.route("/rule_groups", methods=["GET", "POST"])
+    def api_rule_groups():
+        if request.method == "POST":
+            auth_err = check_auth()
+            if auth_err:
+                return auth_err
+            data = request.get_json()
+            if not data or not data.get("name"):
+                return jsonify({"error": "缺少 name"}), 400
+            name = data["name"].strip()
+            if not name:
+                return jsonify({"error": "名称不能为空"}), 400
+            group = create_rule_group(name)
+            return jsonify(group)
+        return jsonify(list_rule_groups())
+
+    @app.route("/rule_groups/<int:group_id>", methods=["GET", "PUT", "DELETE"])
+    def api_rule_group_detail(group_id: int):
+        if request.method == "GET":
+            group = get_rule_group(group_id)
+            if not group:
+                return jsonify({"error": "规则组不存在"}), 404
+            return jsonify(group)
+        auth_err = check_auth()
+        if auth_err:
+            return auth_err
+        if request.method == "PUT":
+            data = request.get_json()
+            if not data or not data.get("name"):
+                return jsonify({"error": "缺少 name"}), 400
+            name = data["name"].strip()
+            if not name:
+                return jsonify({"error": "名称不能为空"}), 400
+            update_rule_group(group_id, name)
+            return jsonify({"ok": True})
+        if request.method == "DELETE":
+            try:
+                delete_rule_group(group_id)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            broadcast("videos", list_videos())
+            return jsonify({"ok": True})
+        return jsonify({"error": "method not allowed"}), 405
+
+    @app.route("/rule_groups/<int:group_id>/rules", methods=["POST"])
+    def api_add_rule(group_id: int):
+        auth_err = check_auth()
+        if auth_err:
+            return auth_err
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "缺少参数"}), 400
+        rule_type = data.get("type")
+        value = data.get("value")
+        if rule_type is None or value is None:
+            return jsonify({"error": "缺少 type 或 value"}), 400
+        if rule_type not in (1, 2, 3, 4):
+            return jsonify({"error": "无效的规则类型"}), 400
+        import json
+        rule = add_rule(group_id, rule_type, json.dumps(value, ensure_ascii=False))
+        return jsonify(rule)
+
+    @app.route("/rules/<int:rule_id>", methods=["PUT", "DELETE"])
+    def api_rule_detail(rule_id: int):
+        auth_err = check_auth()
+        if auth_err:
+            return auth_err
+        if request.method == "PUT":
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "缺少参数"}), 400
+            rule_type = data.get("type")
+            value = data.get("value")
+            if rule_type is None or value is None:
+                return jsonify({"error": "缺少 type 或 value"}), 400
+            if rule_type not in (1, 2, 3, 4):
+                return jsonify({"error": "无效的规则类型"}), 400
+            import json
+            update_rule(rule_id, rule_type, json.dumps(value, ensure_ascii=False))
+            return jsonify({"ok": True})
+        if request.method == "DELETE":
+            delete_rule(rule_id)
+            return jsonify({"ok": True})
+        return jsonify({"error": "method not allowed"}), 405
+
     # ============ 视频管理 ============
     @app.route("/videos", methods=["GET", "POST"])
     def api_videos():
@@ -178,6 +267,15 @@ def register_routes(app):
                         clear_scores(video_id)
                 if "paused" in data:
                     upd["paused"] = 1 if data["paused"] else 0
+                if "rule_group_id" in data:
+                    rgid = data["rule_group_id"]
+                    if rgid is not None:
+                        # 验证规则组存在
+                        if not get_rule_group(int(rgid)):
+                            return jsonify({"error": "规则组不存在"}), 400
+                        upd["rule_group_id"] = int(rgid)
+                    else:
+                        upd["rule_group_id"] = get_default_group_id()
                 if upd:
                     update_video(video_id, **upd)
             broadcast("videos", list_videos())
