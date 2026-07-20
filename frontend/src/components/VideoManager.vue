@@ -7,7 +7,7 @@ const emit = defineEmits(['select', 'export'])
   <div class="video-panel">
     <h2>监控视频</h2>
     <div class="video-list">
-      <div v-if="!videos.length" class="empty">点击右上角「设置」添加视频</div>
+      <div v-if="!videos.length" class="empty">点击右上角「管理」添加视频</div>
       <div
         v-for="v in videos" :key="v.id"
         :class="['video-item', { active: v.id === selectedId, paused: v.paused }]"

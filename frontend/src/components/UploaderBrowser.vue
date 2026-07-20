@@ -38,7 +38,7 @@ function onCoverError(e) {
 
 <template>
   <div class="video-panel">
-    <h2>监控视频</h2>
+    <h2>查看视频数据</h2>
 
     <div v-if="!uploaders.length" class="empty">点击右上角「管理」添加视频</div>
 
