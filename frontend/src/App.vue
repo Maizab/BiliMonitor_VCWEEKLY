@@ -38,6 +38,7 @@ const confirmRef = ref(null)
 const toastRef = ref(null)
 const pageReady = ref(false)
 const refreshKey = ref(0)
+const initialRestoreDone = ref(false)
 
 // 当前 URL 中的 mid 和 bvid（用于 UploaderBrowser 展开和高亮）
 const currentMid = ref(null)
@@ -145,16 +146,24 @@ function restoreFromRoute() {
           currentBvid.value = bvid
         }
       }
+    } else {
+      selectedId.value = null
+      currentBvid.value = null
     }
-    // 如果路由是 /mid 但没有 bvid，不选中任何视频（显示空状态）
   } else if (hash === '/') {
-    // 首页：检查 localStorage 中是否有上次路由
-    const lastRoute = localStorage.getItem('last-route')
-    if (lastRoute && lastRoute !== '/') {
-      router.replace(lastRoute)
-      return
+    if (!initialRestoreDone.value) {
+      const lastRoute = localStorage.getItem('last-route')
+      if (lastRoute && lastRoute !== '/') {
+        initialRestoreDone.value = true
+        router.replace(lastRoute)
+        return
+      }
     }
+    currentMid.value = null
+    currentBvid.value = null
+    selectedId.value = null
   }
+  initialRestoreDone.value = true
 }
 
 // 监听路由变化（用户点击视频时通过 router.push 触发）
@@ -173,6 +182,17 @@ function onSelectVideo({ video, uploaderMid }) {
   selectedId.value = video.id
   currentBvid.value = video.bvid
   router.push(`/${uploaderMid}/${video.bvid}`)
+}
+
+function onExpandUploader(mid) {
+  currentMid.value = mid
+  if (mid) {
+    router.push(`/${mid}`)
+  } else {
+    selectedId.value = null
+    currentBvid.value = null
+    router.push('/')
+  }
 }
 
 function onVideoExport(v) {
@@ -222,6 +242,7 @@ onUnmounted(() => disconnect())
           :initial-mid="currentMid"
           @select="onSelectVideo"
           @export="onVideoExport"
+          @expand-uploader="onExpandUploader"
         />
         <DataCards :snapshot="latestSnapshot" :reference="referenceSnapshot" :loading="dataLoading" :score-enabled="scoreEnabled" />
       </aside>

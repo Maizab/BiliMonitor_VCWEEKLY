@@ -8,7 +8,7 @@ const props = defineProps({
   selectedBvid: { type: String, default: null },
   initialMid: { type: Number, default: null },
 })
-const emit = defineEmits(['select', 'export'])
+const emit = defineEmits(['select', 'export', 'expand-uploader'])
 
 // 当前展开的上传者 mid（null 表示在上传者列表视图）
 // 用 initialMid 初始化，确保从 URL 恢复时直接展开正确的 UP 主
@@ -20,9 +20,9 @@ const videoListRef = ref(null)
 // 搜索
 const searchQuery = ref('')
 
-// 当 initialMid 变化时（URL 恢复），展开对应 UP主
+// 当 initialMid 变化时（URL 恢复），展开或折叠对应 UP主
 watch(() => props.initialMid, (mid) => {
-  if (mid) expandedMid.value = mid
+  expandedMid.value = mid || null
 })
 
 // 当 selectedBvid 和 uploaders 就绪后，滚动到 active 视频
@@ -46,10 +46,12 @@ const expandedUploader = computed(() => {
 function expandUploader(uploader) {
   expandedMid.value = uploader.mid
   searchQuery.value = ''
+  emit('expand-uploader', uploader.mid)
 }
 
 function goBack() {
   expandedMid.value = null
+  emit('expand-uploader', null)
 }
 
 function selectVideo(video) {

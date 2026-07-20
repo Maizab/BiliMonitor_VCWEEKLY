@@ -1049,8 +1049,11 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .log-box {
   background: var(--surface-secondary); border: 1px solid var(--border-light);
   border-radius: 8px; height: 140px; overflow-y: auto; padding: 10px 14px;
-  font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
-  font-size: 12px; line-height: 1.7; color: var(--text-muted);
+  font-family:
+    "Cascadia Code", "SF Mono", "Fira Code", "Consolas", "Menlo",
+    "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Hiragino Sans GB", "WenQuanYi Micro Hei",
+    monospace;
+  font-size: 13px; line-height: 1.7; color: var(--text-muted);
 }
 .log-empty { text-align: center; color: var(--text-placeholder); padding: 20px 0; }
 .log-line { white-space: pre-wrap; word-break: break-all; }
