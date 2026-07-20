@@ -711,7 +711,7 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 
 .video-table-wrap { max-height: 320px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: 8px; }
 .video-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.video-table th { position: sticky; top: 0; background: var(--surface-secondary); padding: 8px 10px; text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border-light); white-space: nowrap; }
+.video-table th { position: sticky; top: 0; z-index: 1; background: var(--surface-secondary); padding: 8px 10px; text-align: left; font-weight: 600; color: var(--text-muted); border-bottom: 1px solid var(--border-light); white-space: nowrap; }
 .video-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-light); vertical-align: middle; }
 .video-table tbody tr:hover { background: var(--surface-hover); }
 .video-table tbody tr.paused { opacity: .55; }
