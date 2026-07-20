@@ -1,15 +1,42 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { avatarUrl, coverUrls, isCollaboration } from '../utils/imageUrl.js'
+import { searchUploaders } from '../composables/useSearch.js'
 
 const props = defineProps({
   uploaders: { type: Array, default: () => [] },
   selectedBvid: { type: String, default: null },
+  initialMid: { type: Number, default: null },
 })
 const emit = defineEmits(['select', 'export'])
 
 // 当前展开的上传者 mid（null 表示在上传者列表视图）
-const expandedMid = ref(null)
+// 用 initialMid 初始化，确保从 URL 恢复时直接展开正确的 UP 主
+const expandedMid = ref(props.initialMid)
+
+// 视频列表容器 ref（用于滚动）
+const videoListRef = ref(null)
+
+// 搜索
+const searchQuery = ref('')
+
+// 当 initialMid 变化时（URL 恢复），展开对应 UP主
+watch(() => props.initialMid, (mid) => {
+  if (mid) expandedMid.value = mid
+})
+
+// 当 selectedBvid 和 uploaders 就绪后，滚动到 active 视频
+watch(() => [props.selectedBvid, expandedMid.value], async ([bvid]) => {
+  if (!bvid) return
+  await nextTick()
+  const el = videoListRef.value?.querySelector('.video-item.active')
+  if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+})
+
+const searchResults = computed(() => {
+  if (!searchQuery.value.trim()) return []
+  return searchUploaders(props.uploaders, searchQuery.value)
+})
 
 const expandedUploader = computed(() => {
   if (!expandedMid.value) return null
@@ -18,6 +45,7 @@ const expandedUploader = computed(() => {
 
 function expandUploader(uploader) {
   expandedMid.value = uploader.mid
+  searchQuery.value = ''
 }
 
 function goBack() {
@@ -25,7 +53,26 @@ function goBack() {
 }
 
 function selectVideo(video) {
-  emit('select', { video, uploaderMid: expandedMid.value })
+  emit('select', { video, uploaderMid: expandedMid.value || video._searchUploaderMid })
+}
+
+function onSearchSelect(result) {
+  if (result.type === 'uploader') {
+    expandUploader({ mid: result.mid, name: result.name, face: result.face, videos: result.videos })
+  } else {
+    selectVideo(result)
+  }
+}
+
+// 发布者列表字符串（owner 在前）
+function publisherList(uploaders) {
+  if (!uploaders || !uploaders.length) return ''
+  const sorted = [...uploaders].sort((a, b) => {
+    if (a.role === 'owner') return -1
+    if (b.role === 'owner') return 1
+    return 0
+  })
+  return sorted.map(u => u.name).join(' / ')
 }
 
 // 封面加载失败时显示占位
@@ -40,8 +87,69 @@ function onCoverError(e) {
   <div class="video-panel">
     <h2>查看视频数据</h2>
 
-    <div v-if="!uploaders.length" class="empty">点击右上角「管理」添加视频</div>
+    <!-- 搜索框 -->
+    <div class="search-wrap">
+      <input
+        v-model="searchQuery"
+        type="text"
+        class="search-input"
+        placeholder="搜索UP主/视频/BV号…"
+      />
+      <span v-if="searchQuery" class="search-clear" @click="searchQuery = ''">✕</span>
+    </div>
 
+    <div v-if="!uploaders.length && !searchQuery" class="empty">点击右上角「管理」添加视频</div>
+
+    <!-- ===== 搜索结果 ===== -->
+    <div v-if="searchQuery.trim()" class="search-results">
+      <div v-if="!searchResults.length" class="empty">无匹配结果</div>
+      <div v-else class="result-list">
+        <!-- UP主结果 -->
+        <div
+          v-for="r in searchResults.filter(s => s.type === 'uploader')" :key="'u'+r.mid"
+          class="search-up-item"
+          @click="onSearchSelect(r)"
+        >
+          <img class="uploader-avatar" :src="avatarUrl(r.face)" referrerpolicy="no-referrer" loading="lazy" />
+          <div class="uploader-info">
+            <span class="uploader-name">{{ r.name }}</span>
+            <span class="uploader-count">{{ r.videoCount }} 个视频</span>
+          </div>
+          <span class="arrow">›</span>
+        </div>
+        <!-- 视频结果 -->
+        <div
+          v-for="r in searchResults.filter(s => s.type === 'video')" :key="'v'+r.id"
+          :class="['search-video-item', { active: r.bvid === selectedBvid, paused: r.paused }]"
+          @click="onSearchSelect(r)"
+        >
+          <div class="cover-wrap">
+            <picture>
+              <source :srcset="coverUrls(r.pic).avif" type="image/avif" />
+              <img class="cover-img" :src="coverUrls(r.pic).webp" referrerpolicy="no-referrer" loading="lazy" @error="onCoverError" />
+            </picture>
+            <div class="cover-placeholder">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            </div>
+            <span v-if="isCollaboration(r)" class="collab-badge">合作</span>
+          </div>
+          <div class="info">
+            <div class="t">
+              <span class="t-text">{{ r.title }}</span>
+              <span v-if="r.paused" class="pause-badge">⏸ 暂停</span>
+            </div>
+            <div class="bv">{{ r.bvid }}</div>
+            <div class="publisher-line">{{ publisherList(r.uploaders) }}</div>
+          </div>
+          <button class="export-btn" @click.stop="emit('export', r)" title="导出数据">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 普通浏览（非搜索） ===== -->
+    <template v-if="!searchQuery.trim()">
     <!-- 面包屑：浏览上传者的视频时 -->
     <div v-if="expandedUploader" class="breadcrumb">
       <button class="back-btn" @click="goBack">← 返回</button>
@@ -71,7 +179,7 @@ function onCoverError(e) {
     </div>
 
     <!-- Level 2: 上传者的视频列表 -->
-    <div v-if="expandedUploader" class="video-list">
+    <div v-if="expandedUploader" ref="videoListRef" class="video-list">
       <div
         v-for="v in expandedUploader.videos" :key="v.id"
         :class="['video-item', { active: v.bvid === selectedBvid, paused: v.paused }]"
@@ -109,6 +217,7 @@ function onCoverError(e) {
       </div>
       <div v-if="!expandedUploader.videos.length" class="empty">暂无视频</div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -193,6 +302,42 @@ h2 { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: var(--text);
   transition: all .12s;
 }
 .export-btn:hover { color: var(--accent); }
+
+/* 搜索 */
+.search-wrap { position: relative; margin-bottom: 10px; }
+.search-input {
+  width: 100%; border: 1px solid var(--border); border-radius: 7px;
+  padding: 6px 28px 6px 10px; font-size: 12px; outline: none;
+  background: var(--surface); color: var(--text);
+  transition: border-color .2s; box-sizing: border-box;
+}
+.search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px #4f8ef720; }
+.search-input::placeholder { color: var(--text-placeholder); }
+.search-clear {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  cursor: pointer; font-size: 13px; color: var(--text-placeholder); line-height: 1;
+}
+.search-clear:hover { color: var(--text); }
+.search-results { max-height: 380px; overflow-y: auto; }
+.result-list { /* container */ }
+.search-up-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-radius: 8px; cursor: pointer; margin-bottom: 1px;
+  transition: background .12s;
+}
+.search-up-item:hover { background: var(--surface-hover); }
+.search-video-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border-radius: 8px; cursor: pointer; margin-bottom: 1px;
+  transition: background .12s; border: 1px solid transparent;
+}
+.search-video-item:hover { background: var(--surface-hover); }
+.search-video-item.active { background: var(--accent-light); border-color: var(--accent-border); }
+.search-video-item.paused { opacity: .65; border-left: 3px solid #f0c040; }
+.publisher-line {
+  font-size: 10px; color: var(--text-muted); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* 空状态 */
 .empty { text-align: center; color: var(--text-placeholder); padding: 24px 0; font-size: 13px; }

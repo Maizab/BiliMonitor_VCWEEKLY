@@ -39,7 +39,8 @@ const toastRef = ref(null)
 const pageReady = ref(false)
 const refreshKey = ref(0)
 
-// 当前 URL 中的 bvid（用于 UploaderBrowser 高亮）
+// 当前 URL 中的 mid 和 bvid（用于 UploaderBrowser 展开和高亮）
+const currentMid = ref(null)
 const currentBvid = ref(null)
 
 provide('api', api)
@@ -134,13 +135,15 @@ function restoreFromRoute() {
   if (match) {
     const mid = Number(match[1])
     const bvid = match[2] || null
-    // 在该上传者的视频中查找
-    const uploader = uploaders.value.find(u => u.mid === mid)
-    if (uploader && bvid) {
-      const video = uploader.videos.find(v => v.bvid === bvid)
-      if (video) {
-        selectedId.value = video.id
-        currentBvid.value = bvid
+    currentMid.value = mid
+    if (bvid) {
+      const uploader = uploaders.value.find(u => u.mid === mid)
+      if (uploader) {
+        const video = uploader.videos.find(v => v.bvid === bvid)
+        if (video) {
+          selectedId.value = video.id
+          currentBvid.value = bvid
+        }
       }
     }
     // 如果路由是 /mid 但没有 bvid，不选中任何视频（显示空状态）
@@ -216,6 +219,7 @@ onUnmounted(() => disconnect())
         <UploaderBrowser
           :uploaders="uploaders"
           :selected-bvid="currentBvid"
+          :initial-mid="currentMid"
           @select="onSelectVideo"
           @export="onVideoExport"
         />

@@ -3,6 +3,7 @@ import { ref, inject, watch, nextTick, computed } from 'vue'
 import Dropdown from './Dropdown.vue'
 import RuleEditModal from './RuleEditModal.vue'
 import { avatarUrl } from '../utils/imageUrl.js'
+import { searchUploaders } from '../composables/useSearch.js'
 
 const props = defineProps({ show: Boolean })
 const emit = defineEmits(['close', 'change'])
@@ -30,8 +31,6 @@ const newBvid = ref('')
 
 // Tabs
 const activeTab = ref('settings')
-// 视频列表视图模式
-const videoViewMode = ref('flat')  // 'flat' | 'grouped'
 
 // Rule groups
 const ruleGroups = ref([])
@@ -505,8 +504,36 @@ const uploaderGroups = computed(() => {
 // 管理页面内的上传者展开状态
 const mgmtExpandedMid = ref(null)
 
+// 展开的UP主视频全部被删除时，自动回到UP主列表
+watch(() => {
+  if (!mgmtExpandedMid.value) return
+  const u = uploaderGroups.value.find(g => g.mid === mgmtExpandedMid.value)
+  return u?.videos?.length || 0
+}, (count) => {
+  if (count === 0) mgmtExpandedMid.value = null
+})
+
+// 管理页面搜索
+const mgmtSearchQuery = ref('')
+
+const mgmtSearchResults = computed(() => {
+  if (!mgmtSearchQuery.value.trim()) return []
+  return searchUploaders(uploaderGroups.value, mgmtSearchQuery.value)
+})
+
 function mgmtExpandUploader(uploader) {
   mgmtExpandedMid.value = uploader.mid
+}
+
+// 发布者列表（owner 在前）
+function publisherList(uploaders) {
+  if (!uploaders || !uploaders.length) return ''
+  const sorted = [...uploaders].sort((a, b) => {
+    if (a.role === 'owner') return -1
+    if (b.role === 'owner') return 1
+    return 0
+  })
+  return sorted.map(u => u.name).join(' / ')
 }
 
 function isDefaultGroup(g) {
@@ -546,20 +573,78 @@ function isDefaultGroup(g) {
               <!-- ========== Tab: 采集设置 ========== -->
               <template v-if="activeTab === 'settings'">
                 <section class="section">
-                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                    <h3 style="margin-bottom:0;">监控视频 <span class="count">({{ videos.length }})</span></h3>
-                    <div class="view-toggle">
-                      <button :class="['toggle-btn', { active: videoViewMode === 'flat' }]" @click="videoViewMode = 'flat'">列表</button>
-                      <button :class="['toggle-btn', { active: videoViewMode === 'grouped' }]" @click="videoViewMode = 'grouped'">按UP主</button>
-                    </div>
-                  </div>
+                  <h3>监控视频 <span class="count">({{ videos.length }})</span></h3>
                   <div class="add-row">
                     <input type="text" v-model="newBvid" placeholder="输入 BV 号添加" @keydown.enter="addVideo" />
                     <button class="btn-add" @click="addVideo">添加</button>
                   </div>
 
+                  <!-- 搜索 -->
+                  <div class="mgmt-search-wrap">
+                    <input type="text" v-model="mgmtSearchQuery" class="mgmt-search-input" placeholder="搜索UP主/视频/BV号…" />
+                    <span v-if="mgmtSearchQuery" class="search-clear" @click="mgmtSearchQuery = ''">✕</span>
+                  </div>
+
+                  <!-- ===== 搜索结果（直接可操作） ===== -->
+                  <div v-if="mgmtSearchQuery.trim()" class="mgmt-search-results">
+                    <div v-if="!mgmtSearchResults.length" class="empty-hint">无匹配结果</div>
+                    <template v-else>
+                      <!-- UP主命中：作为分组标题，下列出其所有视频 -->
+                      <template v-for="r in mgmtSearchResults.filter(s => s.type === 'uploader')" :key="'su'+r.mid">
+                        <div class="search-up-header" @click="mgmtSearchQuery = ''; mgmtExpandedMid = r.mid">
+                          <img class="mgmt-up-avatar" :src="avatarUrl(r.face)" referrerpolicy="no-referrer" />
+                          <span class="search-up-name">{{ r.name }}</span>
+                          <span class="search-up-count">{{ r.videoCount }} 个视频</span>
+                          <span class="arrow">›</span>
+                        </div>
+                      </template>
+                      <!-- 视频结果（表格行，直接操作） -->
+                      <div class="video-table-wrap" style="max-height:none;">
+                        <table class="video-table">
+                          <thead>
+                            <tr>
+                              <th class="col-title">视频</th>
+                              <th class="col-group">规则组</th>
+                              <th class="col-count">数据</th>
+                              <th class="col-time">最后更新</th>
+                              <th class="col-actions">操作</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="v in mgmtSearchResults.filter(s => s.type === 'video')" :key="'sv'+v.id" :class="{ paused: v.paused }">
+                              <td class="col-title">
+                                <div class="v-title">{{ v.title }}</div>
+                                <div class="v-bvid">{{ v.bvid }}</div>
+                                <div class="v-pub" style="font-size:10px;color:var(--text-muted);">{{ publisherList(v.uploaders) }}</div>
+                              </td>
+                              <td class="col-group">
+                                <Dropdown
+                                  :options="groupOptions()"
+                                  :modelValue="v.rule_group_id"
+                                  @update:modelValue="assignRuleGroup(v.id, $event)"
+                                />
+                              </td>
+                              <td class="col-count">{{ v.snapshot_count || 0 }}</td>
+                              <td class="col-time">{{ fmtTs(v.last_snapshot_at) }}</td>
+                              <td class="col-actions">
+                                <button :class="['btn-sm', v.paused ? 'btn-resume' : 'btn-pause']"
+                                  :title="v.paused ? '继续采集' : '暂停采集'"
+                                  @click="togglePaused(v)">{{ v.paused ? '继续' : '暂停' }}</button>
+                                <button :class="['btn-sm', v.score_enabled ? 'btn-score-on' : 'btn-score-off']"
+                                  :title="v.score_enabled ? '关闭得点' : '得点已关闭'"
+                                  @click="toggleScore(v)">得点</button>
+                                <button class="btn-sm btn-del" @click="deleteVideo(v.id)" title="删除">删除</button>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </template>
+                  </div>
+
                   <!-- ===== 分组视图 ===== -->
-                  <div v-if="videoViewMode === 'grouped'" class="mgmt-uploader-groups">
+                  <!-- UP主分组视图（始终显示） -->
+                  <div v-if="!mgmtSearchQuery.trim()" class="mgmt-uploader-groups">
                     <!-- 面包屑 -->
                     <div v-if="mgmtExpandedMid" class="mgmt-breadcrumb">
                       <button class="back-btn" @click="mgmtExpandedMid = null">← 返回UP主列表</button>
@@ -618,48 +703,6 @@ function isDefaultGroup(g) {
                     </div>
                   </div>
 
-                  <!-- ===== 平铺视图 ===== -->
-                  <div v-if="videoViewMode === 'flat'" class="video-table-wrap">
-                    <table v-if="videos.length" class="video-table">
-                      <thead>
-                        <tr>
-                          <th class="col-title">视频</th>
-                          <th class="col-group">规则组</th>
-                          <th class="col-count">数据条数</th>
-                          <th class="col-time">最后更新</th>
-                          <th class="col-actions">操作</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="v in videos" :key="v.id" :class="{ paused: v.paused }">
-                          <td class="col-title">
-                            <div class="v-title">{{ v.title || v.bvid }}</div>
-                            <div class="v-bvid">{{ v.bvid }}</div>
-                          </td>
-                          <td class="col-group">
-                            <Dropdown
-                              :options="groupOptions()"
-                              :modelValue="v.rule_group_id"
-                              @update:modelValue="assignRuleGroup(v.id, $event)"
-                            />
-                          </td>
-                          <td class="col-count">{{ v.snapshot_count || 0 }}</td>
-                          <td class="col-time">{{ fmtTs(v.last_snapshot_at) }}</td>
-                          <td class="col-actions">
-                            <button :class="['btn-sm', v.paused ? 'btn-resume' : 'btn-pause']"
-                              :title="v.paused ? '继续采集' : '暂停采集'"
-                              @click="togglePaused(v)">{{ v.paused ? '继续' : '暂停' }}</button>
-                            <button :class="['btn-sm', v.score_enabled ? 'btn-score-on' : 'btn-score-off']"
-                              :title="v.score_enabled ? '关闭得点' : '得点已关闭'"
-                              @click="toggleScore(v)">得点</button>
-                            <button class="btn-sm btn-del" @click="deleteVideo(v.id)" title="删除">删除</button>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <div v-else class="empty-videos">暂无视频，添加一个开始监控</div>
-                  </div>
-                  <!-- end flat view -->
                 </section>
               </template>
 
@@ -971,15 +1014,6 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .btn-primary { border: none; border-radius: 7px; padding: 8px 24px; font-size: 13px; cursor: pointer; font-weight: 500; background: var(--accent); color: #fff; transition: all .15s; }
 .btn-primary:hover { background: var(--accent-hover); }
 
-/* 视图切换 */
-.view-toggle { display: flex; gap: 2px; background: var(--surface-secondary); border-radius: 6px; padding: 2px; }
-.toggle-btn {
-  border: none; background: none; padding: 3px 10px; font-size: 11px;
-  cursor: pointer; border-radius: 4px; color: var(--text-muted); font-weight: 500;
-  transition: all .12s;
-}
-.toggle-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-
 /* 管理页面中的UP主列表 */
 .mgmt-uploader-groups { min-height: 100px; }
 .mgmt-breadcrumb { margin-bottom: 8px; }
@@ -999,6 +1033,31 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 .mgmt-up-name { font-size: 12px; font-weight: 500; }
 .mgmt-up-count { font-size: 10px; color: var(--text-placeholder); display: block; }
 .arrow { font-size: 16px; color: var(--text-placeholder); flex-shrink: 0; }
+
+/* 管理页面搜索 */
+.mgmt-search-wrap { position: relative; margin-bottom: 8px; }
+.mgmt-search-input {
+  width: 100%; border: 1px solid var(--border); border-radius: 7px;
+  padding: 6px 28px 6px 10px; font-size: 12px; outline: none;
+  background: var(--surface); color: var(--text);
+  transition: border-color .2s; box-sizing: border-box;
+}
+.mgmt-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px #4f8ef720; }
+.mgmt-search-input::placeholder { color: var(--text-placeholder); }
+.mgmt-search-wrap .search-clear {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  cursor: pointer; font-size: 13px; color: var(--text-placeholder); line-height: 1;
+}
+.mgmt-search-wrap .search-clear:hover { color: var(--text); }
+.mgmt-search-results { max-height: 400px; overflow-y: auto; }
+.search-up-header {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: var(--surface-secondary); border-radius: 6px; margin-bottom: 6px;
+  cursor: pointer; transition: background .12s;
+}
+.search-up-header:hover { background: var(--surface-hover); }
+.search-up-name { font-size: 12px; font-weight: 600; }
+.search-up-count { font-size: 10px; color: var(--text-placeholder); }
 
 /* Transitions */
 .modal-enter-active { transition: opacity .25s; }
