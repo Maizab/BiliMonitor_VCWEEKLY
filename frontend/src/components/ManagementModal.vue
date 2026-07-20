@@ -51,7 +51,7 @@ const ruleEditShow = ref(false)
 const editingRule = ref(null)  // raw rule from API, or null for add
 
 const RULE_TYPE_LABELS = { 1: '定长', 2: '条件精确', 3: '每天某点', 4: '每周定点' }
-const WEEKDAY_NAMES = ['日', '一', '二', '三', '四', '五', '六']
+const WEEKDAY_NAMES = ['一', '二', '三', '四', '五', '六', '日']
 
 // ---- Timezone conversion (frontend local ↔ backend UTC) ----
 function tzOffset() {
@@ -83,7 +83,7 @@ function toUtcDowTime(localDow, localTime) {
   if (mins >= 1440) dayShift = 1
   mins = ((mins % 1440) + 1440) % 1440
   return {
-    day_of_week: ((localDow - dayShift) % 7 + 7) % 7,
+    day_of_week: ((localDow + dayShift) % 7 + 7) % 7,
     time: `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`,
   }
 }
@@ -281,11 +281,20 @@ async function toggleScore(v) {
 }
 
 async function assignRuleGroup(videoId, groupId) {
+  // 乐观更新：瞬间改本地显示
+  const video = videos.value.find(v => v.id === videoId)
+  if (video) video.rule_group_id = groupId
+  // 也更新分组视图里的数据
+  for (const u of uploaders.value) {
+    const v = u.videos?.find(v => v.id === videoId)
+    if (v) v.rule_group_id = groupId
+  }
   try {
     await api.assignVideoRule(videoId, groupId)
-    videos.value = await api.getVideos()
     toastRef?.value?.show('规则组已切换', 'success')
   } catch (e) { /* ignore */ }
+  // 用后端数据覆盖，保证一致性
+  videos.value = await api.getVideos()
 }
 
 function fmtTs(ts) {
@@ -405,7 +414,7 @@ function startEditRule(rule) {
 }
 
 async function onRuleSaved({ type, value }) {
-  // Convert time values from local to UTC
+  // 转换为 UTC 时间
   let finalValue = value
   if (type === 3) {
     finalValue = { time: toUtcTime(value.time) }
@@ -417,8 +426,22 @@ async function onRuleSaved({ type, value }) {
   const isEdit = !!editingRule.value
   const editRuleId = editingRule.value?.id
   const gid = selectedGroupId.value
+  const prevGroup = selectedGroup.value ? { ...selectedGroup.value, rules: [...(selectedGroup.value.rules || [])] } : null
 
-  // Close modal immediately
+  // 乐观更新：先改本地数据
+  const jsonValue = JSON.stringify(finalValue)
+  if (selectedGroup.value?.rules) {
+    if (isEdit) {
+      const idx = selectedGroup.value.rules.findIndex(r => r.id === editRuleId)
+      if (idx !== -1) {
+        selectedGroup.value.rules[idx] = { ...selectedGroup.value.rules[idx], rule_type: type, value: jsonValue }
+      }
+    } else {
+      const tempRule = { id: -Date.now(), group_id: gid, rule_type: type, value: jsonValue, position: 999, created_at: '' }
+      selectedGroup.value.rules = [...selectedGroup.value.rules, tempRule]
+    }
+  }
+
   ruleEditShow.value = false
   editingRule.value = null
 
@@ -435,7 +458,10 @@ async function onRuleSaved({ type, value }) {
     selectedGroup.value = group
     emit('change')
     toastRef?.value?.show('规则已保存', 'success')
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    // 失败时恢复旧数据
+    if (prevGroup) selectedGroup.value = prevGroup
+  }
 }
 
 function closeRuleEdit() {
@@ -473,10 +499,10 @@ function ruleSummary(rule) {
       const hi = v.max_value != null ? ` ≤ ${v.max_value}` : ''
       return `${lo}${label}${hi} → ${v.target_interval}s`
     }
-    if (rule.rule_type === 3) return `每天 ${toLocalTime(v.time)} (${tzLabel})`
+    if (rule.rule_type === 3) return `每天 ${toLocalTime(v.time)} (${tzLabel.value})`
     if (rule.rule_type === 4) {
       const l = toLocalDowTime(v.day_of_week ?? 4, v.time || '19:00')
-      return `每周${WEEKDAY_NAMES[l.day_of_week]} ${l.time}`
+      return `每周${WEEKDAY_NAMES[l.day_of_week]} ${l.time} (${tzLabel.value})`
     }
   } catch (e) { return '-' }
   return '-'
@@ -761,7 +787,7 @@ function isDefaultGroup(g) {
 
                       <!-- 规则列表 -->
                       <div class="rules-list">
-                        <div v-if="!selectedGroup.rules?.length" class="empty-hint">暂无规则，添加一条开始</div>
+                        <div v-if="!selectedGroup.rules?.length" class="empty-hint">空规则组 — 默认每 60 秒采集一次</div>
                         <div v-for="r in selectedGroup.rules" :key="r.id" class="rule-item">
                           <div class="rule-info">
                             <span :class="['rule-tag', `type-${r.rule_type}`]">{{ RULE_TYPE_LABELS[r.rule_type] }}</span>

@@ -26,7 +26,11 @@ function onMouseDown(e) {
 }
 
 onMounted(() => document.addEventListener('mousedown', onMouseDown))
-onBeforeUnmount(() => document.removeEventListener('mousedown', onMouseDown))
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onMouseDown)
+  window.removeEventListener('scroll', calcPos, true)
+  window.removeEventListener('resize', calcPos)
+})
 
 const selectedLabel = () => {
   const opt = props.options.find(o => o.value === props.modelValue)
@@ -48,6 +52,11 @@ watch(open, async (v) => {
   if (v) {
     await nextTick()
     calcPos()
+    window.addEventListener('scroll', calcPos, true)
+    window.addEventListener('resize', calcPos)
+  } else {
+    window.removeEventListener('scroll', calcPos, true)
+    window.removeEventListener('resize', calcPos)
   }
 })
 </script>

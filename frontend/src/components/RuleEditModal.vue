@@ -24,6 +24,13 @@ const ruleTime = ref('03:00')
 const ruleDow = ref(5)
 const formError = ref('')
 
+// 时区标签
+const tzOffset = new Date().getTimezoneOffset()
+const tzSign = tzOffset <= 0 ? '+' : '-'
+const tzHours = Math.abs(Math.floor(tzOffset / 60))
+const tzMins = Math.abs(tzOffset % 60)
+const tzLabel = tzMins ? `UTC${tzSign}${tzHours}:${String(tzMins).padStart(2, '0')}` : `UTC${tzSign}${tzHours}`
+
 function resetForm() {
   ruleType.value = 1; ruleInterval.value = 60
   ruleCondMetric.value = 'view_count'
@@ -61,7 +68,11 @@ function doSave() {
   formError.value = ''
   let value = {}
   if (ruleType.value === 1) {
-    value = { interval: Math.max(30, ruleInterval.value) }
+    if (ruleInterval.value < 30) {
+      formError.value = '采集间隔不能小于 30 秒'
+      return
+    }
+    value = { interval: ruleInterval.value }
   } else if (ruleType.value === 2) {
     const minRaw = ruleCondMin.value !== null && ruleCondMin.value !== '' ? Number(ruleCondMin.value) : null
     const maxRaw = ruleCondMax.value !== null && ruleCondMax.value !== '' ? Number(ruleCondMax.value) : null
@@ -81,13 +92,15 @@ function doSave() {
       formError.value = '区间左端点必须小于右端点'
       return
     }
-    const minVal = minRaw
-    const maxVal = maxRaw
+    if (ruleCondInterval.value < 30) {
+      formError.value = '步长不能小于 30 秒'
+      return
+    }
     value = {
       metric: ruleCondMetric.value,
-      min_value: minVal,
-      max_value: maxVal,
-      target_interval: Math.max(30, ruleCondInterval.value),
+      min_value: minRaw,
+      max_value: maxRaw,
+      target_interval: ruleCondInterval.value,
     }
   } else if (ruleType.value === 3) {
     value = { time: ruleTime.value }
@@ -111,10 +124,14 @@ function doSave() {
           </div>
 
           <!-- Type 1: 定长 -->
-          <div v-if="ruleType === 1" class="form-row">
-            <label>间隔</label>
-            <input type="number" v-model.number="ruleInterval" min="30" />
-            <span class="unit">秒</span>
+          <div v-if="ruleType === 1">
+            <div class="form-row">
+              <label>间隔</label>
+              <input type="number" v-model.number="ruleInterval" min="30" />
+              <span class="unit">秒</span>
+              <span class="hint">≥30</span>
+            </div>
+            <p v-if="formError" class="form-error">{{ formError }}</p>
           </div>
 
           <!-- Type 2: 条件精确 -->
@@ -131,21 +148,28 @@ function doSave() {
             <div class="form-row">
               <label>步长</label>
               <input type="number" v-model.number="ruleCondInterval" min="30" />
-              <span class="unit">秒（条件成立时）</span>
+              <span class="unit">秒</span>
+              <span class="hint">条件成立时，≥30</span>
             </div>
           </template>
 
           <!-- Type 3: 每天某点 -->
-          <div v-if="ruleType === 3" class="form-row">
-            <label>时间</label>
-            <TimePicker v-model="ruleTime" />
+          <div v-if="ruleType === 3">
+            <div class="form-row">
+              <label>时间</label>
+              <TimePicker v-model="ruleTime" />
+              <span class="hint">{{ tzLabel }}（系统时区）</span>
+            </div>
           </div>
 
           <!-- Type 4: 每周定点 -->
-          <div v-if="ruleType === 4" class="form-row">
-            <label>时间</label>
-            <Dropdown :options="dowOptions" v-model="ruleDow" style="min-width:70px" />
-            <TimePicker v-model="ruleTime" />
+          <div v-if="ruleType === 4">
+            <div class="form-row">
+              <label>时间</label>
+              <Dropdown :options="dowOptions" v-model="ruleDow" style="min-width:70px" />
+              <TimePicker v-model="ruleTime" />
+            </div>
+            <p class="tz-hint">{{ tzLabel }}（系统时区）</p>
           </div>
 
           <div class="actions">
@@ -185,10 +209,12 @@ h2 { font-size: 17px; font-weight: 700; margin: 0 0 20px; }
 }
 .form-row input:focus { border-color: var(--accent); }
 .unit { font-size: 12px; color: var(--text-muted); }
+.hint { font-size: 11px; color: var(--text-placeholder); }
 .cond-input { width: 80px !important; }
 .cond-op { font-size: 13px; color: var(--text-muted); flex-shrink: 0; }
 .cond-metric { min-width: 110px; }
 .form-error { font-size: 12px; color: var(--red); margin: 0 0 4px 56px; }
+.tz-hint { font-size: 11px; color: var(--text-placeholder); margin: 2px 0 0 56px; }
 
 .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
 
