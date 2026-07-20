@@ -120,16 +120,12 @@ function doSave() {
           <!-- Type 2: 条件精确 -->
           <template v-if="ruleType === 2">
             <div class="form-row">
-              <label>指标</label>
-              <Dropdown :options="metricOptions" v-model="ruleCondMetric" />
-            </div>
-            <div class="form-row">
-              <label>区间</label>
-              <span class="bracket">[</span>
-              <input type="number" v-model.number="ruleCondMin" placeholder="不限" class="range-input" min="0" />
-              <span class="range-sep">,</span>
-              <input type="number" v-model.number="ruleCondMax" placeholder="不限" class="range-input" min="0" />
-              <span class="bracket">]</span>
+              <label>条件</label>
+              <input type="number" v-model.number="ruleCondMin" placeholder="不限" class="cond-input" min="0" />
+              <span class="cond-op">&le;</span>
+              <Dropdown :options="metricOptions" v-model="ruleCondMetric" class="cond-metric" />
+              <span class="cond-op">&le;</span>
+              <input type="number" v-model.number="ruleCondMax" placeholder="不限" class="cond-input" min="0" />
             </div>
             <p v-if="formError" class="form-error">{{ formError }}</p>
             <div class="form-row">
@@ -189,9 +185,9 @@ h2 { font-size: 17px; font-weight: 700; margin: 0 0 20px; }
 }
 .form-row input:focus { border-color: var(--accent); }
 .unit { font-size: 12px; color: var(--text-muted); }
-.range-input { width: 100px !important; }
-.bracket { font-size: 14px; font-weight: 600; color: var(--text-placeholder); }
-.range-sep { font-size: 12px; color: var(--text-placeholder); margin: 0 2px; }
+.cond-input { width: 80px !important; }
+.cond-op { font-size: 13px; color: var(--text-muted); flex-shrink: 0; }
+.cond-metric { min-width: 110px; }
 .form-error { font-size: 12px; color: var(--red); margin: 0 0 4px 56px; }
 
 .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
