@@ -24,6 +24,49 @@ class MonitorState:
 
 
 state = MonitorState()
+_wake_event = threading.Event()
+
+
+def wake_monitor():
+    """唤醒 monitor 循环，使其重新计算 sleep 时长"""
+    _wake_event.set()
+
+
+def _log_reset(video: dict, next_epoch: float):
+    """记录单个视频的规则变更日志"""
+    next_str = datetime.fromtimestamp(next_epoch).strftime("%m-%d %H:%M")
+    _app_log.info("规则变更  %s → %s", video["bvid"], next_str)
+
+
+def reset_collect_time_for_video(video_id: int):
+    """单个视频规则变更后重新计算下次采集时间"""
+    now = time.time()
+    videos = list_videos()
+    for v in videos:
+        if v["id"] == video_id:
+            last_snap = get_latest_snapshot(v["id"])
+            next_epoch = compute_next_collect(v, now, last_snap)
+            state.next_collect_times[video_id] = next_epoch
+            _log_reset(v, next_epoch)
+            wake_monitor()
+            break
+
+
+def reset_collect_times_for_group(group_id: int):
+    """规则组变更后，重新计算组内所有视频的下次采集时间"""
+    now = time.time()
+    videos = list_videos()
+    new_times = []
+    for v in videos:
+        if v.get("rule_group_id") == group_id:
+            last_snap = get_latest_snapshot(v["id"])
+            next_epoch = compute_next_collect(v, now, last_snap)
+            state.next_collect_times[v["id"]] = next_epoch
+            next_str = datetime.fromtimestamp(next_epoch).strftime("%m-%d %H:%M")
+            new_times.append(f"{v['bvid']} → {next_str}")
+    if new_times:
+        _app_log.info("规则变更  %s", ", ".join(new_times))
+        wake_monitor()
 
 
 # ============ 日志 ============
@@ -234,7 +277,8 @@ def monitor_loop():
             if not videos:
                 state.running = False
                 state.next_collect_times.clear()
-                time.sleep(10)
+                _wake_event.wait(10)
+                _wake_event.clear()
                 session = None
                 continue
 
@@ -263,22 +307,24 @@ def monitor_loop():
                     if i > 0:
                         time.sleep(1.5)  # 错开请求，避免触发 API 限流
                     collect_start = time.time()
+                    collect_ok = False
                     try:
                         ok, err = collect_video(session, video, now_str)
+                        collect_ok = ok
                         if not ok:
                             errors.append(err)
                             _app_log.warning("FAIL %s: %s", video['bvid'], err)
-                        else:
-                            _app_log.info("OK   %s", video['bvid'])
                     except Exception as e:
                         errors.append(f"{now_str}: [{video['bvid']}] {e}")
                         _app_log.error("ERR  %s: %s", video['bvid'], e)
 
                     # 采集后重新计算下次采集时间
                     last_snap = get_latest_snapshot(video["id"])
-                    state.next_collect_times[video["id"]] = compute_next_collect(
-                        video, collect_start, last_snap
-                    )
+                    next_epoch = compute_next_collect(video, collect_start, last_snap)
+                    state.next_collect_times[video["id"]] = next_epoch
+                    if collect_ok:
+                        next_str = datetime.fromtimestamp(next_epoch).strftime("%m-%d %H:%M")
+                        _app_log.info("OK   %-14s → 下次 %s", video['bvid'], next_str)
 
             # 清理已删除视频的条目
             active_ids = {v["id"] for v in active}
@@ -309,4 +355,5 @@ def monitor_loop():
             state.last_error = f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}: {e}"
             sleep_sec = 30
 
-        time.sleep(sleep_sec)
+        _wake_event.wait(sleep_sec)
+        _wake_event.clear()

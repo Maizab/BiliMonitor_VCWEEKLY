@@ -228,16 +228,21 @@ def update_rule_group(group_id: int, name: str):
         conn.commit()
 
 
-def delete_rule_group(group_id: int):
-    """删除规则组，关联视频移到默认组。不允许删除默认组。"""
+def delete_rule_group(group_id: int) -> list[int]:
+    """删除规则组，关联视频移到默认组。不允许删除默认组。
+    返回被移动的视频 ID 列表。"""
     default_id = get_default_group_id()
     if group_id == default_id:
         raise ValueError("不能删除默认规则组")
     with get_db() as conn:
+        # 先查出被影响的视频 ID
+        rows = conn.execute("SELECT id FROM videos WHERE rule_group_id=?", (group_id,)).fetchall()
+        moved_ids = [r["id"] for r in rows]
         conn.execute("UPDATE videos SET rule_group_id=? WHERE rule_group_id=?", (default_id, group_id))
         conn.execute("DELETE FROM rules WHERE group_id=?", (group_id,))
         conn.execute("DELETE FROM rule_groups WHERE id=?", (group_id,))
         conn.commit()
+        return moved_ids
 
 
 def get_rules_for_group(group_id: int) -> list[dict]:

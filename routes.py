@@ -26,13 +26,27 @@ from ratelimit import (
     check_challenge_rate, record_verify_failure, clear_verify_failures,
     check_export_rate, _check_ban, _get_client_ip, _verified_ips,
 )
-from monitor import state, broadcast, _subscribers, _log_handler
+from monitor import state, broadcast, _subscribers, _log_handler, reset_collect_times_for_group, reset_collect_time_for_video
+
 
 # 已使用的 nonce 集合（防重放攻击）
 _used_nonces: set[str] = set()
 
 # BVID 格式: BV + 10位 base58 (不含 0, O, I, l)
 BVID_RE = re.compile(r'^BV[1-9A-HJ-NP-Za-km-z]{10}$')
+
+
+def _validate_rule_interval(rule_type: int, value: dict) -> str | None:
+    """验证规则采集间隔不小于 30 秒，返回错误信息或 None"""
+    if rule_type == 1:
+        interval = value.get("interval", 60)
+        if interval < 30:
+            return "采集间隔不能小于 30 秒"
+    elif rule_type == 2:
+        interval = value.get("target_interval", 60)
+        if interval < 30:
+            return "目标采集间隔不能小于 30 秒"
+    return None
 
 
 def register_routes(app):
@@ -166,10 +180,13 @@ def register_routes(app):
             return jsonify({"ok": True})
         if request.method == "DELETE":
             try:
-                delete_rule_group(group_id)
+                moved_ids = delete_rule_group(group_id)
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
             broadcast("videos", list_videos())
+            # 只重置被移动的视频
+            for vid in moved_ids:
+                reset_collect_time_for_video(vid)
             return jsonify({"ok": True})
         return jsonify({"error": "method not allowed"}), 405
 
@@ -187,8 +204,13 @@ def register_routes(app):
             return jsonify({"error": "缺少 type 或 value"}), 400
         if rule_type not in (1, 2, 3, 4):
             return jsonify({"error": "无效的规则类型"}), 400
+        # 验证采集间隔不小于 30 秒
+        interval_err = _validate_rule_interval(rule_type, value)
+        if interval_err:
+            return jsonify({"error": interval_err}), 400
         import json
         rule = add_rule(group_id, rule_type, json.dumps(value, ensure_ascii=False))
+        reset_collect_times_for_group(group_id)
         return jsonify(rule)
 
     @app.route("/rules/<int:rule_id>", methods=["PUT", "DELETE"])
@@ -206,11 +228,24 @@ def register_routes(app):
                 return jsonify({"error": "缺少 type 或 value"}), 400
             if rule_type not in (1, 2, 3, 4):
                 return jsonify({"error": "无效的规则类型"}), 400
+            interval_err = _validate_rule_interval(rule_type, value)
+            if interval_err:
+                return jsonify({"error": interval_err}), 400
             import json
             update_rule(rule_id, rule_type, json.dumps(value, ensure_ascii=False))
+            # 找到该规则所属的规则组并重置
+            with get_db() as conn:
+                row = conn.execute("SELECT group_id FROM rules WHERE id=?", (rule_id,)).fetchone()
+                if row:
+                    reset_collect_times_for_group(row["group_id"])
             return jsonify({"ok": True})
         if request.method == "DELETE":
+            # 先找到 group_id 再删除
+            with get_db() as conn:
+                row = conn.execute("SELECT group_id FROM rules WHERE id=?", (rule_id,)).fetchone()
             delete_rule(rule_id)
+            if row:
+                reset_collect_times_for_group(row["group_id"])
             return jsonify({"ok": True})
         return jsonify({"error": "method not allowed"}), 405
 
@@ -312,6 +347,7 @@ def register_routes(app):
                         upd["rule_group_id"] = get_default_group_id()
                 if upd:
                     update_video(video_id, **upd)
+                    reset_collect_time_for_video(video_id)
             broadcast("videos", list_videos())
             return jsonify({"ok": True})
         return jsonify({"error": "method not allowed"}), 405
