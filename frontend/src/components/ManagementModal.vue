@@ -709,8 +709,8 @@ function isDefaultGroup(g) {
               <!-- ========== Tab: 规则组管理 ========== -->
               <template v-if="activeTab === 'rules'">
                 <div class="layout">
-                  <!-- 左侧：规则组列表 -->
-                  <div class="group-panel">
+                  <!-- 左侧：规则组列表（桌面端始终显示，移动端选中后隐藏） -->
+                  <div class="group-panel" :class="{ 'mobile-hidden': selectedGroupId }">
                     <div class="panel-header">
                       <span class="panel-title">规则组</span>
                     </div>
@@ -730,7 +730,9 @@ function isDefaultGroup(g) {
                           </template>
                         </div>
                         <div class="group-actions" @click.stop>
-                          <button class="btn-icon" title="重命名" @click="startRename(g)">✎</button>
+                          <button class="btn-icon" title="重命名" @click="startRename(g)">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                          </button>
                           <button class="btn-icon btn-danger" title="删除"
                             :disabled="isDefaultGroup(g)" @click="deleteGroup(g)">✕</button>
                         </div>
@@ -745,8 +747,10 @@ function isDefaultGroup(g) {
                     </div>
                   </div>
 
-                  <!-- 右侧：组详情 -->
-                  <div class="detail-panel">
+                  <!-- 右侧：组详情（桌面端始终显示，移动端选中后全屏） -->
+                  <div class="detail-panel" :class="{ 'mobile-full': selectedGroupId }">
+                    <!-- 移动端返回按钮 -->
+                    <button class="mobile-back-btn" @click="selectedGroupId = null; selectedGroup = null">← 返回规则组列表</button>
                     <Transition name="detail-fade" mode="out-in">
                       <div v-if="detailLoading" key="loading" class="detail-loading"><span class="spinner"></span></div>
                       <div v-else-if="selectedGroup" :key="selectedGroupId" class="detail-inner">
@@ -942,6 +946,23 @@ h2 { font-size: 17px; font-weight: 700; margin-bottom: 16px; }
 
 .empty-hint { text-align: center; color: var(--text-placeholder); font-size: 12px; padding: 16px 0; }
 .detail-empty { padding: 60px 0 !important; }
+
+/* 规则组管理响应式 */
+.mobile-back-btn {
+  display: none;
+  border: none; background: none; padding: 4px 0; margin-bottom: 8px;
+  font-size: 12px; cursor: pointer; color: var(--accent); font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .layout { flex-direction: column; }
+  .group-panel { width: 100% !important; }
+  .group-panel.mobile-hidden { display: none; }
+  .detail-panel { display: none; }
+  .detail-panel.mobile-full { display: block; }
+  .mobile-back-btn { display: block; }
+  .detail-empty { padding: 40px 0 !important; }
+}
 
 .detail-loading { display: flex; align-items: center; justify-content: center; padding: 60px 0; }
 .detail-loading .spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
