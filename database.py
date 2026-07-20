@@ -38,8 +38,6 @@ def init_db():
                 value TEXT
             )"""
         )
-        conn.execute("INSERT OR IGNORE INTO config(key, value) VALUES (?, ?)", ("interval", str(_config["monitor"]["interval"])))
-
         conn.execute(
             """CREATE TABLE IF NOT EXISTS rule_groups (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,19 +155,6 @@ def init_db():
                 (gid, 1, '{"interval": 60}', 0, now),
             )
 
-        conn.commit()
-
-
-# ============ 配置表 CRUD ============
-def get_config(key: str) -> str | None:
-    with get_db() as conn:
-        row = conn.execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
-        return row["value"] if row else None
-
-
-def set_config(key: str, value: str):
-    with get_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO config(key, value) VALUES (?, ?)", (key, value))
         conn.commit()
 
 

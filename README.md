@@ -48,10 +48,6 @@ db_path = "monitor.db"
 [auth]
 password = ""
 
-# 采集间隔（秒），最小 30
-[monitor]
-interval = 30
-
 # 得点计算配置
 [score]
 # 增量得点参考点（周六凌晨 3 点）查询容差窗口（分钟）

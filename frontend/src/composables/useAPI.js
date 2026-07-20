@@ -55,15 +55,6 @@ async function verifyPassword(password) {
 }
 
 const API = {
-  async getConfig() {
-    const { data } = await http.get('/config')
-    return data
-  },
-  async saveConfig(interval) {
-    const headers = await getAuthHeaders()
-    const { data } = await http.post('/config', { interval }, { headers })
-    return data
-  },
   async getVideos() {
     const { data } = await http.get('/videos')
     return data

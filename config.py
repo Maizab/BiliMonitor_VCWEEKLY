@@ -11,7 +11,6 @@ CONFIG_PATH = "config.toml"
 _DEFAULT_CONFIG = {
     "storage": {"db_path": "monitor.db"},
     "auth": {"password": ""},
-    "monitor": {"interval": 30},
     "score": {"increment_window": 10},  # 周六凌晨3点参考点的容差窗口（分钟）
     "rate_limit": {
         "challenge_rate": 10,
@@ -44,9 +43,6 @@ def _validate_config(cfg: dict) -> dict:
                 merged[section][key] = default
             else:
                 merged[section][key] = val
-    # 特殊处理：采集间隔最小 30 秒
-    if merged["monitor"]["interval"] < 30:
-        merged["monitor"]["interval"] = 30
     return merged
 
 
@@ -58,10 +54,6 @@ _CONFIG_COMMENTS = {
     "auth": {
         "": "# 认证配置",
         "password": "# 密码，为空则不启用认证（单用户，前端用 SHA256(challenge) 验证）",
-    },
-    "monitor": {
-        "": "# 采集配置",
-        "interval": "# 数据采集间隔（秒），最小 30",
     },
     "score": {
         "": "# 得点计算配置",

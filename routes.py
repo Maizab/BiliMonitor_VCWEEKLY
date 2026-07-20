@@ -10,10 +10,10 @@ from urllib.parse import quote
 
 from flask import Response, request, jsonify
 
-from config import _config, AUTH_PASSWORD, _save_config
+from config import AUTH_PASSWORD
 from utils import _ts_to_iso, _normalize_ts
 from database import (
-    dict_from_row, get_db, get_config, set_config,
+    dict_from_row, get_db,
     list_videos, add_video, delete_video, update_video,
     clear_scores, recalc_scores, get_latest_snapshot, get_snapshots,
     get_saturday_ref,
@@ -122,25 +122,6 @@ def register_routes(app):
         if ban:
             return ban
         return jsonify({"error": "密码错误"}), 403
-
-    # ============ 配置 ============
-    @app.route("/config", methods=["GET", "POST"])
-    def api_config():
-        if request.method == "POST":
-            auth_err = check_auth()
-            if auth_err:
-                return auth_err
-            data = request.get_json()
-            if data and "interval" in data and data["interval"]:
-                val = int(data["interval"])
-                val = max(30, val)
-                set_config("interval", str(val))
-                _config["monitor"]["interval"] = val
-                _save_config(_config)
-            return jsonify({"ok": True})
-        return jsonify({
-            "interval": int(get_config("interval") or _config["monitor"]["interval"]),
-        })
 
     # ============ 规则组管理 ============
     @app.route("/rule_groups", methods=["GET", "POST"])
