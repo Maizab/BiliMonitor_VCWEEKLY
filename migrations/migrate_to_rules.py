@@ -1,21 +1,57 @@
 """数据迁移脚本：将旧版本数据库迁移到规则组架构
 
 用法：
-    python migrate_to_rules.py
+    python migrations/migrate_to_rules.py
 
 功能：
     1. 创建 rule_groups / rules 表
     2. 为 videos 表添加 rule_group_id 列
     3. 创建"默认"规则组（含一条定长规则）
     4. 将所有旧视频绑定到默认组
-    5. 可选：将旧 config 表中的 interval 值同步到默认规则
+    5. 为缺失上传者关联的视频补全 video_uploaders 记录
 """
 
 import sqlite3
 import sys
+import time
 from datetime import datetime
 
+import requests
+
 DB_PATH = "monitor.db"
+
+
+def _build_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0"
+        ),
+        "Origin": "https://www.bilibili.com",
+        "Referer": "https://www.bilibili.com/",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    })
+    return s
+
+
+def _fetch_detail(session, bvid):
+    """获取视频详情，返回 (data_dict, error_str)"""
+    try:
+        resp = session.get(
+            "https://api.bilibili.com/x/web-interface/view",
+            params={"bvid": bvid},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data["code"] != 0:
+            return None, f"code={data['code']} msg={data.get('message', '')}"
+        return data["data"], None
+    except Exception as e:
+        return None, str(e)
 
 
 def migrate():
@@ -30,7 +66,7 @@ def migrate():
     print()
 
     # 1. 创建新表
-    print("[1/4] 创建 rule_groups / rules 表 ...", end=" ")
+    print("[1/5] 创建 rule_groups / rules 表 ...", end=" ")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS rule_groups (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +89,7 @@ def migrate():
     print("OK")
 
     # 2. 为 videos 表添加 rule_group_id 列
-    print("[2/4] 添加 videos.rule_group_id 列 ...", end=" ")
+    print("[2/5] 添加 videos.rule_group_id 列 ...", end=" ")
     try:
         conn.execute(
             "ALTER TABLE videos ADD COLUMN rule_group_id INTEGER REFERENCES rule_groups(id)"
@@ -64,7 +100,7 @@ def migrate():
         print("OK（已存在）")
 
     # 3. 创建默认规则组
-    print("[3/4] 创建默认规则组 ...", end=" ")
+    print("[3/5] 创建默认规则组 ...", end=" ")
     existing = conn.execute("SELECT COUNT(*) FROM rule_groups").fetchone()[0]
     if existing == 0:
         # 尝试读取旧的 interval 配置
@@ -94,7 +130,7 @@ def migrate():
         print(f"OK（已存在，组 id={gid}）")
 
     # 4. 将旧视频绑定到默认组
-    print("[4/4] 迁移现有视频 ...", end=" ")
+    print("[4/5] 迁移现有视频 ...", end=" ")
     null_count = conn.execute(
         "SELECT COUNT(*) FROM videos WHERE rule_group_id IS NULL"
     ).fetchone()[0]
@@ -107,6 +143,92 @@ def migrate():
         print(f"OK（已绑定 {null_count} 个视频到默认组）")
     else:
         print("OK（无需迁移）")
+
+    # 5. 修复缺失上传者关联的视频
+    print("[5/5] 修复缺失上传者关联的视频 ...")
+    orphans = conn.execute(
+        """SELECT id, bvid, title FROM videos
+           WHERE id NOT IN (SELECT DISTINCT video_id FROM video_uploaders)
+              OR title IS NULL OR title = ''
+              OR pubdate IS NULL OR pubdate = 0
+              OR pic IS NULL OR pic = ''
+           ORDER BY id"""
+    ).fetchall()
+
+    if not orphans:
+        print("      OK（无需修复）")
+    else:
+        print(f"      发现 {len(orphans)} 个待修复视频")
+        session = _build_session()
+        ok_count = 0
+        for v in orphans:
+            print(f"      [{v['bvid']}] 获取详情 ...", end=" ", flush=True)
+            detail, err = _fetch_detail(session, v["bvid"])
+            if detail is None:
+                print(f"失败 — {err}")
+                time.sleep(1)
+                continue
+
+            owner = detail.get("owner", {})
+            staff = detail.get("staff", [])
+            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 插入或更新上传者
+            uploaders = []
+            if owner and owner.get("mid"):
+                conn.execute(
+                    "INSERT OR IGNORE INTO uploaders (mid, name, face, updated_at) VALUES (?, ?, ?, ?)",
+                    (owner["mid"], owner.get("name", ""), owner.get("face", "") or "", now),
+                )
+                conn.execute(
+                    "UPDATE uploaders SET name=?, face=?, updated_at=? WHERE mid=?",
+                    (owner.get("name", ""), owner.get("face", "") or "", now, owner["mid"]),
+                )
+                uploaders.append({"mid": owner["mid"], "role": "owner"})
+
+            for s in (staff or []):
+                if s.get("mid"):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO uploaders (mid, name, face, updated_at) VALUES (?, ?, ?, ?)",
+                        (s["mid"], s.get("name", ""), s.get("face", "") or "", now),
+                    )
+                    conn.execute(
+                        "UPDATE uploaders SET name=?, face=?, updated_at=? WHERE mid=?",
+                        (s.get("name", ""), s.get("face", "") or "", now, s["mid"]),
+                    )
+                    uploaders.append({"mid": s["mid"], "role": s.get("title", "staff")})
+
+            for u in uploaders:
+                conn.execute(
+                    "INSERT OR IGNORE INTO video_uploaders (video_id, uploader_mid, role) VALUES (?, ?, ?)",
+                    (v["id"], u["mid"], u["role"]),
+                )
+
+            # 补全标题、发布时间、封面
+            title = detail.get("title", "") or ""
+            pubdate = detail.get("pubdate", 0) or 0
+            pic = detail.get("pic", "") or ""
+            if pic:
+                if pic.startswith("http://"):
+                    pic = pic[5:]
+                elif pic.startswith("https://"):
+                    pic = pic[6:]
+            conn.execute(
+                "UPDATE videos SET title=?, pubdate=?, pic=? WHERE id=?",
+                (title, pubdate, pic, v["id"]),
+            )
+
+            conn.commit()
+            print(f"OK — {len(uploaders)} 人")
+            ok_count += 1
+            time.sleep(1.5)
+
+        # 清理孤儿上传者
+        conn.execute(
+            "DELETE FROM uploaders WHERE mid NOT IN (SELECT DISTINCT uploader_mid FROM video_uploaders)"
+        )
+        conn.commit()
+        print(f"      修复完成: 成功 {ok_count}, 失败 {len(orphans) - ok_count}")
 
     conn.close()
 
@@ -124,10 +246,18 @@ def migrate():
     ).fetchone()[0]
     g_total = conn2.execute("SELECT COUNT(*) FROM rule_groups").fetchone()[0]
     r_total = conn2.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
+    v_orphan = conn2.execute(
+        """SELECT COUNT(*) FROM videos
+           WHERE id NOT IN (SELECT DISTINCT video_id FROM video_uploaders)
+              OR title IS NULL OR title = ''
+              OR pubdate IS NULL OR pubdate = 0
+              OR pic IS NULL OR pic = ''"""
+    ).fetchone()[0]
     conn2.close()
 
     print(f"  视频总数: {v_total}  已绑定: {v_bound}")
     print(f"  规则组数: {g_total}  规则数: {r_total}")
+    print(f"  缺失上传者: {v_orphan}")
     print()
 
 
