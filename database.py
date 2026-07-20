@@ -81,6 +81,30 @@ def init_db():
             conn.execute("ALTER TABLE videos ADD COLUMN pubdate INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        # 迁移：旧版本数据库补充 pic（封面）列
+        try:
+            conn.execute("ALTER TABLE videos ADD COLUMN pic TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS uploaders (
+                mid        INTEGER PRIMARY KEY,
+                name       TEXT NOT NULL,
+                face       TEXT DEFAULT '',
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS video_uploaders (
+                video_id     INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+                uploader_mid INTEGER NOT NULL REFERENCES uploaders(mid) ON DELETE CASCADE,
+                role         TEXT NOT NULL DEFAULT 'staff',
+                PRIMARY KEY (video_id, uploader_mid)
+            )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_vu_video ON video_uploaders(video_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_vu_uploader ON video_uploaders(uploader_mid)")
 
         conn.execute(
             """CREATE TABLE IF NOT EXISTS snapshots (
@@ -276,6 +300,8 @@ def list_videos() -> list[dict]:
             d = dict_from_row(r)
             if d.get("last_snapshot_at"):
                 d["last_snapshot_at"] = _ts_to_iso(d["last_snapshot_at"])
+            # 附加上传者信息
+            d["uploaders"] = get_video_uploaders(d["id"])
             result.append(d)
         return result
 
@@ -300,6 +326,8 @@ def delete_video(video_id: int):
         conn.execute("DELETE FROM snapshots WHERE video_id=?", (video_id,))
         conn.execute("DELETE FROM videos WHERE id=?", (video_id,))
         conn.commit()
+    # 清理不再关联任何视频的上传者
+    cleanup_orphan_uploaders()
 
 
 def update_video(video_id: int, **kwargs):
@@ -309,6 +337,113 @@ def update_video(video_id: int, **kwargs):
     with get_db() as conn:
         conn.execute(f"UPDATE videos SET {sets} WHERE id=?", (*kwargs.values(), video_id))
         conn.commit()
+
+
+# ============ 上传者（UP主）管理 ============
+def upsert_uploader(mid: int, name: str, face: str = "") -> dict:
+    """插入或更新上传者信息。
+    使用 INSERT OR IGNORE + UPDATE 而非 INSERT OR REPLACE，
+    避免 REPLACE 的 DELETE 操作触发 video_uploaders 的 ON DELETE CASCADE。"""
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO uploaders (mid, name, face, updated_at) VALUES (?, ?, ?, ?)",
+            (mid, name, face or "", now),
+        )
+        conn.execute(
+            "UPDATE uploaders SET name=?, face=?, updated_at=? WHERE mid=?",
+            (name, face or "", now, mid),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM uploaders WHERE mid=?", (mid,)).fetchone()
+        return dict_from_row(row)
+
+
+def get_uploader_by_mid(mid: int) -> dict | None:
+    """按 mid 查找上传者"""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM uploaders WHERE mid=?", (mid,)).fetchone()
+        return dict_from_row(row)
+
+
+def sync_video_uploaders(video_id: int, uploaders: list[dict]):
+    """同步视频的上传者关联。uploaders 列表每项包含 mid, role 字段。
+    先删除旧关联，再插入新关联。完成后清理孤儿上传者。"""
+    with get_db() as conn:
+        conn.execute("DELETE FROM video_uploaders WHERE video_id=?", (video_id,))
+        for u in uploaders:
+            conn.execute(
+                "INSERT OR IGNORE INTO video_uploaders (video_id, uploader_mid, role) VALUES (?, ?, ?)",
+                (video_id, u["mid"], u.get("role", "staff")),
+            )
+        conn.commit()
+    cleanup_orphan_uploaders()
+
+
+def get_video_uploaders(video_id: int) -> list[dict]:
+    """获取视频关联的所有上传者（包含头像、名称、角色）"""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT u.mid, u.name, u.face, vu.role
+               FROM video_uploaders vu
+               JOIN uploaders u ON u.mid = vu.uploader_mid
+               WHERE vu.video_id=?
+               ORDER BY CASE WHEN vu.role='owner' THEN 0 ELSE 1 END, vu.rowid""",
+            (video_id,),
+        ).fetchall()
+        return [dict_from_row(r) for r in rows]
+
+
+def cleanup_orphan_uploaders():
+    """删除没有任何关联视频的上传者"""
+    with get_db() as conn:
+        conn.execute(
+            """DELETE FROM uploaders WHERE mid NOT IN (
+                   SELECT DISTINCT uploader_mid FROM video_uploaders
+               )"""
+        )
+        conn.commit()
+
+
+def list_uploaders_with_videos() -> list[dict]:
+    """返回所有上传者及其视频列表（按名称排序）"""
+    with get_db() as conn:
+        # 获取所有上传者
+        uploaders = conn.execute(
+            """SELECT u.*, COUNT(vu.video_id) AS video_count
+               FROM uploaders u
+               LEFT JOIN video_uploaders vu ON vu.uploader_mid = u.mid
+               GROUP BY u.mid
+               HAVING video_count > 0
+               ORDER BY u.name"""
+        ).fetchall()
+        result = []
+        for u_row in uploaders:
+            u = dict_from_row(u_row)
+            # 获取该上传者的所有视频
+            v_rows = conn.execute(
+                """SELECT v.*, vu.role,
+                          g.name AS rule_group_name,
+                          COUNT(s.id) as snapshot_count,
+                          MAX(s.timestamp) as last_snapshot_at
+                   FROM video_uploaders vu
+                   JOIN videos v ON v.id = vu.video_id
+                   LEFT JOIN rule_groups g ON g.id = v.rule_group_id
+                   LEFT JOIN snapshots s ON s.video_id = v.id
+                   WHERE vu.uploader_mid = ?
+                   GROUP BY v.id
+                   ORDER BY v.id""",
+                (u["mid"],),
+            ).fetchall()
+            videos = []
+            for v_row in v_rows:
+                v = dict_from_row(v_row)
+                if v.get("last_snapshot_at"):
+                    v["last_snapshot_at"] = _ts_to_iso(v["last_snapshot_at"])
+                videos.append(v)
+            u["videos"] = videos
+            result.append(u)
+        return result
 
 
 # ============ 得点管理 ============

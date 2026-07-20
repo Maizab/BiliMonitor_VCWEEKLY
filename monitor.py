@@ -9,6 +9,7 @@ from datetime import datetime
 
 from utils import calculate_score, _ts_to_iso
 from database import list_videos, update_video, _get_saturday_ref_raw, get_db, get_latest_snapshot
+from database import upsert_uploader, sync_video_uploaders
 from rules import compute_next_collect
 from bilibili import build_session, fetch_video_detail, fetch_online_count
 
@@ -89,6 +90,21 @@ _werkzeug_log.propagate = False
 
 
 # ============ 采集逻辑 ============
+def _sync_video_uploaders_from_detail(video_id: int, owner: dict, staff: list[dict]):
+    """从 Bilibili API 的 owner/staff 信息同步上传者数据"""
+    uploaders = []
+    if owner and owner.get("mid"):
+        upsert_uploader(owner["mid"], owner.get("name", ""), owner.get("face", ""))
+        uploaders.append({"mid": owner["mid"], "role": "owner"})
+    for s in (staff or []):
+        if s.get("mid"):
+            upsert_uploader(s["mid"], s.get("name", ""), s.get("face", ""))
+            role = s.get("title", "staff")
+            uploaders.append({"mid": s["mid"], "role": role})
+    if uploaders:
+        sync_video_uploaders(video_id, uploaders)
+
+
 def collect_video(session, video: dict, now: str):
     """采集单个视频数据"""
     vid = video["id"]
@@ -101,12 +117,25 @@ def collect_video(session, video: dict, now: str):
 
     stat = detail["stat"]
 
-    # 缓存 cid，首次更新标题和发布时间
+    # 缓存 cid，首次更新标题、发布时间
     if vid not in state.video_cid:
         state.video_cid[vid] = detail["cid"]
         pubdate = detail.get("pubdate", 0) or 0
         update_video(vid, title=detail["title"], pubdate=pubdate)
         broadcast("videos", list_videos())
+
+    # 每次采集都同步封面和上传者（幂等，覆盖更新、改名、换头像等情况）
+    pic = detail.get("pic", "") or ""
+    if pic:
+        if pic.startswith("http://"):
+            pic = pic[5:]
+        elif pic.startswith("https://"):
+            pic = pic[6:]
+        update_video(vid, pic=pic)
+
+    owner = detail.get("owner", {})
+    staff = detail.get("staff", [])
+    _sync_video_uploaders_from_detail(vid, owner, staff)
 
     # 在线人数
     online, _ = fetch_online_count(session, bvid, state.video_cid[vid])

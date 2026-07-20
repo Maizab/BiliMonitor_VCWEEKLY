@@ -20,6 +20,7 @@ from database import (
     get_default_group_id, list_rule_groups, get_rule_group,
     create_rule_group, update_rule_group, delete_rule_group,
     add_rule, update_rule, delete_rule,
+    upsert_uploader, sync_video_uploaders, list_uploaders_with_videos,
 )
 from ratelimit import (
     check_challenge_rate, record_verify_failure, clear_verify_failures,
@@ -213,6 +214,12 @@ def register_routes(app):
             return jsonify({"ok": True})
         return jsonify({"error": "method not allowed"}), 405
 
+    # ============ 上传者浏览 ============
+    @app.route("/uploaders")
+    def api_uploaders():
+        """返回按上传者分组的视频列表"""
+        return jsonify(list_uploaders_with_videos())
+
     # ============ 视频管理 ============
     @app.route("/videos", methods=["GET", "POST"])
     def api_videos():
@@ -229,6 +236,33 @@ def register_routes(app):
             result = add_video(bvid)
             if result is None:
                 return jsonify({"error": "已存在或无效"}), 409
+            # 立即从 Bilibili 获取详情以填充上传者/封面信息
+            try:
+                from bilibili import build_session, fetch_video_detail
+                session = build_session()
+                detail, err = fetch_video_detail(session, bvid)
+                if detail and not err:
+                    # 更新封面
+                    pic = detail.get("pic", "") or ""
+                    if pic.startswith("http://"):
+                        pic = pic[5:]
+                    elif pic.startswith("https://"):
+                        pic = pic[6:]
+                    update_video(result["id"], title=detail.get("title", ""),
+                                 pubdate=detail.get("pubdate", 0) or 0, pic=pic)
+                    # 同步上传者
+                    owner = detail.get("owner", {})
+                    staff = detail.get("staff", [])
+                    if owner and owner.get("mid"):
+                        upsert_uploader(owner["mid"], owner.get("name", ""), owner.get("face", ""))
+                        uploaders = [{"mid": owner["mid"], "role": "owner"}]
+                        for s in (staff or []):
+                            if s.get("mid"):
+                                upsert_uploader(s["mid"], s.get("name", ""), s.get("face", ""))
+                                uploaders.append({"mid": s["mid"], "role": s.get("title", "staff")})
+                        sync_video_uploaders(result["id"], uploaders)
+            except Exception:
+                pass  # 获取详情失败不阻塞添加流程
             state.running = True
             state.last_error = None
             broadcast("status", {
