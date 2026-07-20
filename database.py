@@ -551,7 +551,7 @@ def get_snapshots(video_id: int, hours: int = None, start: str = None, end: str 
         where = "video_id=? AND timestamp <= ?"
         params = (video_id, end)
     else:
-        hours = hours or 24
+        hours = hours if hours is not None else 24
         since = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
         where = "video_id=? AND timestamp >= ?"
         params = (video_id, since)

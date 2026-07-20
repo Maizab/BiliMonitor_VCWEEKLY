@@ -1,6 +1,8 @@
 import time
 import requests
 
+from config import _config
+
 # ============ B站 API 请求 ============
 HEADERS_TEMPLATE = {
     "User-Agent": (
@@ -22,17 +24,23 @@ def build_session() -> requests.Session:
     return s
 
 
-def _retry_get(session: requests.Session, url: str, params: dict, timeout: int, max_retries: int = 3):
-    """带重试的 GET 请求，网络错误时最多重试 max_retries 次"""
+def _retry_get(session: requests.Session, url: str, params: dict, timeout: int):
+    """带重试的 GET 请求，网络/HTTP 错误时重试，次数由 config.toml [bilibili] max_retries 控制"""
+    max_retries = _config["bilibili"]["max_retries"]
     last_err = None
-    for attempt in range(max_retries + 1):
+    for attempt in range(max_retries):
         try:
             if attempt > 0:
                 time.sleep(2 + attempt)  # 递增等待：2s / 3s / 4s
             resp = session.get(url, params=params, timeout=timeout)
             resp.raise_for_status()
             return resp
-        except (requests.ConnectionError, requests.Timeout, ConnectionError) as e:
+        except (
+            requests.ConnectionError,
+            requests.Timeout,
+            ConnectionError,
+            requests.HTTPError,
+        ) as e:
             last_err = e
     raise last_err
 

@@ -340,9 +340,13 @@ def register_routes(app):
                     rgid = data["rule_group_id"]
                     if rgid is not None:
                         # 验证规则组存在
-                        if not get_rule_group(int(rgid)):
+                        try:
+                            rgid_int = int(rgid)
+                        except (ValueError, TypeError):
+                            return jsonify({"error": "无效的 rule_group_id"}), 400
+                        if not get_rule_group(rgid_int):
                             return jsonify({"error": "规则组不存在"}), 400
-                        upd["rule_group_id"] = int(rgid)
+                        upd["rule_group_id"] = rgid_int
                     else:
                         upd["rule_group_id"] = get_default_group_id()
                 if upd:
@@ -361,7 +365,11 @@ def register_routes(app):
         end = request.args.get("end")
         if not video_id:
             return jsonify([])
-        return jsonify(get_snapshots(video_id, hours=int(hours) if hours else None, start=start, end=end))
+        try:
+            h = int(hours) if hours else None
+        except (ValueError, TypeError):
+            h = None
+        return jsonify(get_snapshots(video_id, hours=h, start=start, end=end))
 
     @app.route("/latest")
     def api_latest():

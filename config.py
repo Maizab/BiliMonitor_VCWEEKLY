@@ -22,6 +22,9 @@ _DEFAULT_CONFIG = {
         "export_rate": 5,
         "export_window": 60,
     },
+    "bilibili": {
+        "max_retries": 3,
+    },
 }
 
 
@@ -73,6 +76,10 @@ _CONFIG_COMMENTS = {
         "ban_duration": "# 封禁时长（秒）",
         "export_rate": "# 导出窗口内最多请求次数",
         "export_window": "# 导出限流窗口（秒）",
+    },
+    "bilibili": {
+        "": "# Bilibili API 配置",
+        "max_retries": "# API 请求最大重试次数（含首次）",
     },
 }
 
